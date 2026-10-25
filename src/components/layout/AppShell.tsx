@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { WorkspaceSwitcher } from "../../shared/ui/WorkspaceSwitcher";
 import { CommandPalette } from "../../shared/ui/CommandPalette";
+import { Dialog } from "../../shared/ui/Dialog";
 import { navigateTo, type ViewKey } from "../../shared/navigation";
 import { buildNotifications, getReadIds, markNotificationRead, markAllNotificationsRead, type AppNotification } from "../../shared/notifications";
 
@@ -195,6 +196,7 @@ export function AppShell({ children, currentPageTitle, contextPanel, currentView
  const [isContextPanelOpen, setIsContextPanelOpen] = useState(true);
  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
  const [openMenu, setOpenMenu] = useState<'help' | 'notif' | 'profile' | null>(null);
+ const [helpDialog, setHelpDialog] = useState<'documentation' | 'shortcuts' | 'support' | null>(null);
  const notifications = React.useMemo(() => buildNotifications(), []);
  const [readNotifIds, setReadNotifIds] = React.useState<string[]>(() => getReadIds());
  const unreadNotifs = notifications.filter(n => !readNotifIds.includes(n.id));
@@ -304,6 +306,34 @@ const toggleTheme = () => {
  </a>
 
  <CommandPalette isOpen={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)} />
+ <Dialog
+  open={helpDialog !== null}
+  onClose={() => setHelpDialog(null)}
+  title={helpDialog === 'shortcuts' ? 'Keyboard shortcuts' : helpDialog === 'documentation' ? 'Documentation' : 'Contact support'}
+  maxWidth="max-w-md"
+ >
+  <div className="p-6 space-y-4">
+   <h2 className="text-base font-bold text-text-primary m-0">
+    {helpDialog === 'shortcuts' ? 'Keyboard shortcuts' : helpDialog === 'documentation' ? 'Documentation' : 'Contact support'}
+   </h2>
+   {helpDialog === 'shortcuts' ? (
+    <dl className="space-y-3 text-sm">
+     <div className="flex items-center justify-between gap-4"><dt className="text-text-secondary">Open command palette</dt><dd className="font-mono text-text-primary m-0">Ctrl/⌘ + K</dd></div>
+     <div className="flex items-center justify-between gap-4"><dt className="text-text-secondary">Open search</dt><dd className="font-mono text-text-primary m-0">/</dd></div>
+     <div className="flex items-center justify-between gap-4"><dt className="text-text-secondary">Close the active dialog or menu</dt><dd className="font-mono text-text-primary m-0">Esc</dd></div>
+    </dl>
+   ) : (
+    <p className="text-sm text-text-secondary m-0">
+     {helpDialog === 'documentation'
+      ? 'A documentation destination is not configured in this demo build. Ask your administrator for the current documentation link.'
+      : 'A support contact is not configured in this demo build. Ask your administrator for the current support channel.'}
+    </p>
+   )}
+   <div className="flex justify-end pt-2">
+    <button type="button" onClick={() => setHelpDialog(null)} className="px-3 py-2 rounded-lg border border-border text-sm font-semibold text-text-primary hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-info">Close</button>
+   </div>
+  </div>
+ </Dialog>
 
  {isMobileMenuOpen && (
  <div 
@@ -402,9 +432,9 @@ const toggleTheme = () => {
  </button>
  {openMenu === 'help' && (
  <div className="absolute right-0 mt-2 w-56 rounded-lg bg-surface border border-border shadow-lg z-50 overflow-hidden animate-in fade-in-50 duration-150">
- <button type="button" onClick={() => { setOpenMenu(null); }} className="w-full text-left px-4 py-2.5 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors">Documentation</button>
- <button type="button" onClick={() => { setOpenMenu(null); }} className="w-full text-left px-4 py-2.5 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors">Keyboard shortcuts <span className="ml-1 font-mono text-[10px] text-text-tertiary">/</span></button>
- <button type="button" onClick={() => { setOpenMenu(null); }} className="w-full text-left px-4 py-2.5 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors">Contact support</button>
+ <button type="button" onClick={() => { setOpenMenu(null); setHelpDialog('documentation'); }} className="w-full text-left px-4 py-2.5 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors">Documentation</button>
+ <button type="button" onClick={() => { setOpenMenu(null); setHelpDialog('shortcuts'); }} className="w-full text-left px-4 py-2.5 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors">Keyboard shortcuts <span className="ml-1 font-mono text-[10px] text-text-tertiary">/</span></button>
+ <button type="button" onClick={() => { setOpenMenu(null); setHelpDialog('support'); }} className="w-full text-left px-4 py-2.5 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors">Contact support</button>
  </div>
  )}
  </div>
