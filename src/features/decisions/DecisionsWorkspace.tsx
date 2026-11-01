@@ -2,7 +2,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { getNavParams, clearNavParams, navigateTo } from '../../shared/navigation';
 import { resolveVendorId } from '../../data/vendors';
-import { getCustomDecisions, type CustomDecision } from '../../data/decisions';
+import { getDecisions, type DecisionRecord, type DecisionType } from '../../data/decisions';
 import { DeepLinkBanner } from '../../shared/ui/DeepLinkBanner';
 import { createPortal } from 'react-dom';
 import { 
@@ -11,31 +11,6 @@ import {
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, Button, EmptyState, Eyebrow} from '../../shared/ui/core';
 import { NetworkErrorBanner, PermissionErrorModal, ExpiredSessionModal } from '../../shared/ui/ErrorStates';
-
-export type DecisionType = 'Approve' | 'Reject' | 'Approve with conditions' | 'Accept risk' | 'Request remediation' | 'Reassess';
-
-export interface DecisionRecord {
- id: string;
- decisionTitle: string;
- vendorName: string;
- decisionType: DecisionType;
- context: string;
- riskDescription: string;
- businessImpact: string;
- evidenceRef: string;
- knownGaps: string[];
- optionsConsidered: string[];
- recommendation: string;
- decisionMaker: string;
- timestamp: string;
- decisionRationale: string;
- relatedRemediation: string;
- riskAcceptanceDetails?: {
- acceptedBy: string;
- expiresAt: string;
- reviewCycle: string;
- };
-}
 
 export interface DecisionReplayState {
  decisionId: string;
@@ -59,146 +34,13 @@ export interface DecisionReplayState {
  actionsFollowed: string[];
 }
 
-const MOCK_REPLAY_DATA: DecisionReplayState = {
- decisionId: 'DEC-2026-104',
- decisionTitle: 'Conditional Approval for Public Payment Gateway TLS Policy Extension',
- vendorName: 'Apex Gateway Payments',
- decisionMaker: 'Sarah Jenkins (Chief Information Security Officer)',
- timestamp: 'Oct 04, 2026 - 14:22 UTC',
- decisionType: 'Approve with conditions',
- whatWeKnew: [
- 'Apex Gateway processed $2.4M ARR in Q3 merchant transaction settlement volume.',
- 'Scheduled checkout engine refactor required a temporary extension for legacy cipher deprecation.',
- 'Vendor submitted an active SOC 2 Type II report with zero critical control exceptions.'
- ],
- evidenceExisted: [
- { id: 'ev-01', documentName: 'Apex_SOC2_TypeII_2025.pdf', versionHash: 'demo-ref:8f4c21a...91', validityStatus: 'Valid at time of review' },
- { id: 'ev-02', documentName: 'PEN-2026-APEX-01.pdf', versionHash: 'demo-ref:3b1e99c...42', validityStatus: 'Active Finding #3 Unresolved' }
- ],
- whatChanged: [
- 'Public payment gateway endpoints remained active on TLS 1.0/1.1 14 days past the initial enterprise policy deadline.',
- 'Upstream WAF rules were updated to intercept legacy handshakes during the 30-day grace period.'
- ],
- riskCalculated: 'Moderate-High (CVSS 6.5 equivalent exposure to man-in-the-middle decryption on legacy fallback ciphers).',
- uncertaintyExisted: [
- 'Exact architectural telemetry latency for secondary regional failover routing.',
- 'Whether merchant webhook consumers had fully completed TLS 1.2 client updates.'
- ],
- recommendationMade: 'Grant temporary 30-day conditional approval bound to mandatory WAF IP restriction rules and active remediation monitoring.',
- decisionRationale: 'Accepted temporary exposure under the condition that Cloudflare WAF block rules intercept legacy handshake attempts while remediation REM-001 is completed.',
- actionsFollowed: [
- 'Issued Remediation Ticket REM-001 assigned to Sarah Jenkins.',
- 'Configured compensating WAF rule #8812 in CloudScale edge policy.',
- 'Scheduled automated re-evaluation checkpoint for November 04, 2026.'
- ]
-};
 
-const DEV_DECISIONS: DecisionRecord[] = [
- {
- id: 'DEC-2026-104',
- decisionTitle: 'Conditional Approval for Public Payment Gateway TLS Policy Extension',
- vendorName: 'Apex Gateway Payments',
- decisionType: 'Approve with conditions',
- context: 'Vendor requested a 30-day extension to phase out legacy TLS 1.0/1.1 endpoints following a scheduled checkout engine refactor.',
- riskDescription: 'Exposure to man-in-the-middle decryption attacks and PCI-DSS compliance failure during the extension window.',
- businessImpact: 'Immediate contract termination would halt inbound revenue settlement pipelines ($2.4M ARR).',
- evidenceRef: 'PEN-2026-APEX-01 (Finding #3) & SOC 2 Attestation',
- knownGaps: [
- 'Exact cipher retirement telemetry verification pending.',
- 'Upstream load balancer log streaming continuity unverified.'
- ],
- optionsConsidered: [
- 'Option A: Immediate vendor suspension (High business disruption).',
- 'Option B: Conditional 30-day waiver with strict compensating WAF rules (Selected).'
- ],
- recommendation: 'Grant temporary 30-day conditional approval bound to mandatory WAF IP restriction rules.',
- decisionMaker: 'Sarah Jenkins (Chief Information Security Officer)',
- timestamp: 'Oct 04, 2026 - 14:22 UTC',
- decisionRationale: 'Accepted temporary exposure under the condition that Cloudflare WAF block rules intercept legacy handshake attempts while remediation REM-001 is completed.',
- relatedRemediation: 'REM-001 (Deprecated TLS 1.0/1.1 remediation)'
- },
- {
- id: 'DEC-2026-092',
- decisionTitle: 'Risk Acceptance for Batch CSV Log Export Limitation',
- vendorName: 'DataFlow Analytics',
- decisionType: 'Accept risk',
- context: 'Vendor architecture lacks real-time SIEM streaming, relying instead on scheduled daily batch CSV log exports.',
- riskDescription: 'Delayed threat detection capabilities for security operations center (up to 24-hour latency on audit trails).',
- businessImpact: 'DataFlow provides essential data warehouse analytics required for Q4 product intelligence.',
- evidenceRef: 'SIG-2026-DF-12 (Logging Section)',
- knownGaps: [
- 'Real-time webhook alert continuity unavailable.'
- ],
- optionsConsidered: [
- 'Option A: Require custom API build (Vendor refused due to cost).',
- 'Option B: Formally accept risk under annual re-evaluation (Selected).'
- ],
- recommendation: 'Accept time-bound architectural limitation with quarterly security posture reviews.',
- decisionMaker: 'Marcus Chen (Head of Risk Governance)',
- timestamp: 'Sep 28, 2026 - 09:15 UTC',
- decisionRationale: 'Compensating internal log anomaly monitors provide secondary coverage, mitigating the delayed batch export window.',
- relatedRemediation: 'REM-006 (Accepted risk exception tracking)',
- riskAcceptanceDetails: {
- acceptedBy: 'Marcus Chen (Head of Risk Governance)',
- expiresAt: 'Sep 28, 2027',
- reviewCycle: 'Annual Recertification'
- }
- },
- {
- id: 'DEC-2026-088',
- decisionTitle: 'Rejection of Unvetted Offshore Subprocessor Addition',
- vendorName: 'CloudScale Infrastructure',
- decisionType: 'Reject',
- context: 'Vendor attempted to route secondary telemetry backups through an unvetted offshore subprocessor entity without prior DPA review.',
- riskDescription: 'Potential GDPR cross-border data transfer non-compliance and unverified subprocessor access controls.',
- businessImpact: 'Minor operational delay for secondary logging redundancy; core production remains unaffected.',
- evidenceRef: 'OCR-RSS-2026-88 (Subprocessor Monitor)',
- knownGaps: [
- 'Subprocessor SOC 2 report entirely missing.',
- 'Data residency boundaries undefined.'
- ],
- optionsConsidered: [
- 'Option A: Grant provisional approval (Rejected due to GDPR exposure).',
- 'Option B: Issue formal rejection and halt subprocessor integration (Selected).'
- ],
- recommendation: 'Reject subprocessor integration until Standard Contractual Clauses (SCCs) and security audits are provided.',
- decisionMaker: 'Sarah Jenkins (Chief Information Security Officer)',
- timestamp: 'Sep 19, 2026 - 16:45 UTC',
- decisionRationale: 'Zero-tolerance policy for unvetted Tier 1 data handlers processing personal identifiable information across international borders.',
- relatedRemediation: 'REM-004 (Subprocessor DPA execution)'
- },
- {
- id: 'DEC-2026-096',
- decisionTitle: 'Evidence Update Requested — SOC 2 Type II Renewal',
- vendorName: 'SecureAuth Identity',
- decisionType: 'Request remediation',
- context: 'Automated evidence monitor flagged the vendor SOC 2 Type II report as expired with no renewal uploaded.',
- riskDescription: 'Critical compliance gap: Tier 1 identity provider operating without current audit attestation.',
- businessImpact: 'Conditional vendor approval remains in effect; procurement hold on contract renewal until evidence is refreshed.',
- evidenceRef: 'EV-SEC-2026-096 (Evidence Monitor)',
- knownGaps: [
- 'SOC 2 Type II report expired — renewal not yet provided.',
- 'Pen-test attestation (PEN-2026-SA-99) past due date.'
- ],
- optionsConsidered: [
- 'Option A: Suspend vendor access immediately (Rejected — disproportionate to risk).',
- 'Option B: Issue formal evidence update request with 14-day deadline (Selected).'
- ],
- recommendation: 'Request updated SOC 2 Type II and pen-test attestation within 14 days; escalate to vendor security leadership on day 7 if unacknowledged.',
- decisionMaker: 'System (Automated Evidence Monitor)',
- timestamp: 'Oct 03, 2026 - 08:00 UTC',
- decisionRationale: 'Maintain continuous assurance posture — expired attestations cannot support active risk decisions.',
- relatedRemediation: 'REM-003 (MFA fallback control gap)'
- }
-];
 
 export function DecisionsWorkspace() {
  const [searchQuery, setSearchQuery] = useState('');
  const [deepLink, setDeepLink] = useState<string | null>(null);
  const [deepLinkSource, setDeepLinkSource] = useState<string>('another tab');
  const [deepLinkVendor, setDeepLinkVendor] = useState<string | null>(null);
- // User-recorded decisions (e.g. from a vendor's detail page) merge with demo seeds.
- const [customDecisions] = useState<CustomDecision[]>(() => getCustomDecisions());
 
  // Deep link: pre-fill search from another tab (accepts search or vendorName)
  useEffect(() => {
@@ -227,11 +69,8 @@ export function DecisionsWorkspace() {
  const [replayingDecision, setReplayingDecision] = useState<DecisionRecord | null>(null);
  const isReplaying = replayingDecision !== null;
 
- // Point-in-time reconstruction is built from the decision record the user
- // actually clicked. The rich mock detail only exists for DEC-2026-104;
- // other decisions get a faithful reconstruction from their own fields.
+ // Point-in-time reconstruction is derived from the selected ledger record.
  function buildReplayState(dec: DecisionRecord): DecisionReplayState {
- if (dec.id === 'DEC-2026-104') return MOCK_REPLAY_DATA;
  return {
  decisionId: dec.id,
  decisionTitle: dec.decisionTitle,
@@ -241,7 +80,7 @@ export function DecisionsWorkspace() {
  decisionType: dec.decisionType,
  whatWeKnew: [dec.context],
  evidenceExisted: dec.evidenceRef
- ? [{ id: 'ev-01', documentName: dec.evidenceRef, versionHash: 'demo-ref:unversioned', validityStatus: 'As cited at decision time' }]
+ ? [{ id: 'ev-01', documentName: dec.evidenceRef, versionHash: 'demo-ref:unversioned', validityStatus: 'Demo reference — no archived snapshot' }]
  : [],
  whatChanged: dec.knownGaps,
  riskCalculated: dec.riskDescription,
@@ -271,31 +110,7 @@ export function DecisionsWorkspace() {
  return () => document.removeEventListener('keydown', handleKeyDown);
  }, [selectedDecision, replayingDecision, hasNetworkError, showPermissionModal, showSessionExpired]);
 
- /** Shape a user-recorded decision into the ledger's DecisionRecord. */
- function customDecisionToRecord(d: CustomDecision): DecisionRecord {
- return {
- id: d.id,
- decisionTitle: d.decisionTitle,
- vendorName: d.vendorName,
- decisionType: d.decisionType,
- context: d.decisionRationale,
- riskDescription: 'Recorded directly by the user — see rationale.',
- businessImpact: '—',
- evidenceRef: '',
- knownGaps: [],
- optionsConsidered: [],
- recommendation: d.decisionTitle,
- decisionMaker: d.decisionMaker,
- timestamp: d.timestamp,
- decisionRationale: d.decisionRationale,
- relatedRemediation: '',
- };
- }
-
- const allDecisions = useMemo(
- () => [...customDecisions.map(customDecisionToRecord), ...DEV_DECISIONS],
- [customDecisions]
- );
+ const allDecisions = getDecisions();
 
  const filteredDecisions = useMemo(() => {
  return allDecisions.filter(dec => {
@@ -339,7 +154,7 @@ export function DecisionsWorkspace() {
  <div>
  <div className="flex items-center gap-2 mb-1">
  <span className="font-mono text-xs font-bold text-info bg-info/10 px-2 py-0.5 rounded border border-info/30">{REPLAY.decisionId}</span>
- <span className="text-xs font-bold text-text-secondary uppercase tracking-wider">Historical Point-in-Time Reconstruction</span>
+ <span className="text-xs font-bold text-status-warning uppercase tracking-wider">Demo replay · record-derived</span>
  </div>
  <Eyebrow>Governance</Eyebrow>
  <h1 className="text-page-title">{REPLAY.decisionTitle}</h1>
@@ -347,6 +162,10 @@ export function DecisionsWorkspace() {
  <Button type="button" variant="secondary" size="sm" onClick={() => setReplayingDecision(null)} className="h-9">
  <ArrowLeft aria-hidden="true" size={14} className="mr-1.5" /> Back to Decisions
  </Button>
+ </div>
+
+ <div role="note" className="rounded-lg border border-status-warning/30 bg-status-warning/10 px-4 py-3 text-xs text-text-secondary">
+  Demo reconstruction from the selected decision record only; this is not an archived historical snapshot. Evidence and follow-up details are illustrative.
  </div>
 
  <Card className="shadow-sm bg-surface-hover/30">
@@ -374,7 +193,7 @@ export function DecisionsWorkspace() {
  <Card className="shadow-sm">
  <CardHeader className="border-b border-border px-6 py-4 bg-surface-hover/20">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
- <History aria-hidden="true" size={15} className="text-info" /> 1. What We Knew at the Time (Epistemic State)
+ <History aria-hidden="true" size={15} className="text-info" /> 1. Context Recorded on the Decision
  </CardTitle>
  </CardHeader>
  <CardContent className="p-6 space-y-2">
@@ -389,7 +208,7 @@ export function DecisionsWorkspace() {
  <Card className="shadow-sm">
  <CardHeader className="border-b border-border px-6 py-4 bg-surface-hover/20">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
- <FileCheck aria-hidden="true" size={15} className="text-status-success" /> 2. Versioned Evidence Snapshots (Immutable References)
+ <FileCheck aria-hidden="true" size={15} className="text-status-success" /> 2. Evidence References on the Decision Record
  </CardTitle>
  </CardHeader>
  <CardContent className="p-6">
@@ -415,7 +234,7 @@ export function DecisionsWorkspace() {
  <Card className="shadow-sm">
  <CardHeader className="border-b border-border px-5 py-4 bg-surface-hover/20">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
- <Layers aria-hidden="true" size={15} className="text-risk-high" /> 3. What Changed
+ <Layers aria-hidden="true" size={15} className="text-risk-high" /> 3. Gaps Recorded on the Decision
  </CardTitle>
  </CardHeader>
  <CardContent className="p-5 space-y-2">
@@ -430,7 +249,7 @@ export function DecisionsWorkspace() {
  <Card className="shadow-sm">
  <CardHeader className="border-b border-border px-5 py-4 bg-surface-hover/20">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
- <ShieldAlert aria-hidden="true" size={15} className="text-risk-critical" /> Risk Calculated at Review
+ <ShieldAlert aria-hidden="true" size={15} className="text-risk-critical" /> Risk Description on Record
  </CardTitle>
  </CardHeader>
  <CardContent className="p-5">
@@ -444,7 +263,7 @@ export function DecisionsWorkspace() {
  <Card className="shadow-sm ">
  <CardHeader className="border-b border-border px-6 py-4 bg-risk-moderate/50 dark:bg-risk-moderate/10">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2 text-risk-moderate">
- <AlertTriangle aria-hidden="true" size={15} /> 4. What Uncertainty Existed (Epistemic Gaps)
+ <AlertTriangle aria-hidden="true" size={15} /> 4. Known Gaps on the Decision Record
  </CardTitle>
  </CardHeader>
  <CardContent className="p-6 space-y-2">
@@ -477,7 +296,7 @@ export function DecisionsWorkspace() {
  <Card className="shadow-sm">
  <CardHeader className="border-b border-border px-6 py-4 bg-surface-hover/20">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
- <CheckCircle2 aria-hidden="true" size={15} className="text-status-success" /> 6. Actions That Followed
+ <CheckCircle2 aria-hidden="true" size={15} className="text-status-success" /> 6. Related Remediation on the Decision Record
  </CardTitle>
  </CardHeader>
  <CardContent className="p-6 space-y-2">

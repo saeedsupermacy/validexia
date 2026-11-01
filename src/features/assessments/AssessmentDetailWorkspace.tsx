@@ -278,7 +278,7 @@ export function AssessmentDetailWorkspace({ vendorName, assessmentType, vendorId
  <ArrowLeft aria-hidden="true" size={14} />
  <span>Back to Portfolio</span>
  </Button>
- <div aria-hidden="true" className="h-4 w-px bg-border-border"></div>
+ <div aria-hidden="true" className="h-4 w-px bg-border"></div>
  <div>
  <h1 className="text-lg font-bold text-text-primary">{vendorName}</h1>
  <p className="text-xs text-text-secondary">{assessmentType} • Adaptive Due Diligence Stream</p>

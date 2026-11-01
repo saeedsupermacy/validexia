@@ -49,7 +49,7 @@ export function navigateTo(view: ViewKey, params?: NavParams): void {
 /** Parse the current URL hash into a view + params. Returns null if no valid view. */
 export function parseHash(): { view: ViewKey; params: NavParams } | null {
   try {
-    const raw = window.location.hash.replace(/^#/, '');
+    const raw = window.location.hash.replace(/^#\/?/, '');
     if (!raw) return null;
     const [view, query] = raw.split('?');
     const validViews: ViewKey[] = ['command', 'vendors', 'assessments', 'evidence', 'evidence-inbox',

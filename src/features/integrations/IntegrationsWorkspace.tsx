@@ -351,10 +351,10 @@ export function IntegrationsWorkspace() {
 
  <div className="flex items-center justify-between pt-4 border-t border-border">
  <Button type="button" variant="secondary" size="sm" onClick={() => setSelectedIntegration(null)}>
- Close
+ Cancel
  </Button>
  <Button type="button" variant="primary" size="sm" onClick={() => { setSelectedIntegration(null); }}>
- Close
+ Save Configuration
  </Button>
  </div>
 

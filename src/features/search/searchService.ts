@@ -11,6 +11,7 @@ export interface SearchResult {
 }
 
 import { getVendors } from '../../data/vendors';
+import { getDecisions } from '../../data/decisions';
 
 // --- EXPLICIT DEVELOPMENT FIXTURES (non-vendor entities) ---
 const DEV_FIXTURES: SearchResult[] = [
@@ -18,7 +19,6 @@ const DEV_FIXTURES: SearchResult[] = [
  { id: 'e-1', category: 'evidence', title: 'SOC 2 Type II Report (2025)', subtitle: 'Vendor: SecureAuth Identity', metadata: 'Valid until: Dec 2026', url: '/evidence/e-1' },
  { id: 'e-2', category: 'evidence', title: 'Penetration Test Summary - Q3', subtitle: 'Vendor: CloudScale Infrastructure', metadata: 'Uploaded: Oct 2', url: '/evidence/e-2' },
  { id: 'r-1', category: 'risk_event', title: 'Unpatched Zero-Day Vulnerability', subtitle: 'Source: Threat Intel', metadata: 'Severity: High', url: '/risk-events/r-1' },
- { id: 'd-1', category: 'decision', title: 'Conditional Approval - CloudScale', subtitle: 'Type: Onboarding', metadata: 'Decided by: S. Jenkins', url: '/decisions/d-1' },
 ];
 
 /** Vendor results are built from the canonical registry — all vendors, real IDs, real risk data. */
@@ -33,6 +33,18 @@ function buildVendorResults(): SearchResult[] {
  }));
 }
 
+/** Decision search results are projections of the canonical decision ledger. */
+function buildDecisionResults(): SearchResult[] {
+ return getDecisions().map(decision => ({
+  id: decision.id,
+  category: 'decision',
+  title: decision.decisionTitle,
+  subtitle: `Vendor: ${decision.vendorName} · Type: ${decision.decisionType}`,
+  metadata: `Decided by: ${decision.decisionMaker}`,
+  url: `/decisions/${decision.id}`,
+ }));
+}
+
 // --- MOCK SERVICE INTERFACE ---
 export async function fetchGlobalSearch(query: string, categoryFilter: string = 'all'): Promise<SearchResult[]> {
  return new Promise((resolve, reject) => {
@@ -44,7 +56,7 @@ export async function fetchGlobalSearch(query: string, categoryFilter: string = 
  }
 
  const lowerQuery = query.toLowerCase();
- const allItems = [...buildVendorResults(), ...DEV_FIXTURES];
+ const allItems = [...buildVendorResults(), ...DEV_FIXTURES, ...buildDecisionResults()];
  const results = allItems.filter(item => {
  const matchesQuery = item.title.toLowerCase().includes(lowerQuery) || item.subtitle.toLowerCase().includes(lowerQuery);
  const matchesCategory = categoryFilter === 'all' || item.category === categoryFilter;

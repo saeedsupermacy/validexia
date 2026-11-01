@@ -25,6 +25,9 @@ export interface VendorRecord {
   lastMaterialChange: string;
   website?: string;
   description?: string;
+  category?: string;
+  domain?: string;
+  dependentSystems?: Array<{ name: string; dataHandled: string; residency: string }>;
   status: 'Active' | 'Terminated';
   inherentRisk: number;
   residualRisk: number;
@@ -35,9 +38,25 @@ export interface VendorRecord {
 }
 
 export const DEV_VENDORS: VendorRecord[] = [
-  { id: 'vend-001', name: 'CloudScale Infrastructure', code: 'VND-001', criticality: 'Tier 1', riskLevel: 'Critical', riskScore: 88, evidenceStatus: 'Stale', assessmentStatus: 'Pending Review', openIssues: 5, owner: 'Sarah Jenkins', monitoringStatus: 'Active', lastMaterialChange: 'Today, 09:14 AM' , status: 'Active', inherentRisk: 95, residualRisk: 88, contractStart: '2024-01-15', contractEnd: '2027-01-15' },
+  {
+    id: 'vend-001', name: 'CloudScale Infrastructure', code: 'VND-001', category: 'Cloud & Hosting Services', domain: 'cloudscale-infra.io',
+    criticality: 'Tier 1', riskLevel: 'Critical', riskScore: 88, evidenceStatus: 'Stale', assessmentStatus: 'Pending Review', openIssues: 5,
+    owner: 'Sarah Jenkins', monitoringStatus: 'Active', lastMaterialChange: 'Today, 09:14 AM', status: 'Active', inherentRisk: 95, residualRisk: 88,
+    contractStart: '2024-01-15', contractEnd: '2027-01-15',
+    dependentSystems: [
+      { name: 'Core Billing Engine (US-East)', dataHandled: 'Financial Ledger & PCI', residency: 'AWS us-east-1' },
+      { name: 'Identity Federation Gateway', dataHandled: 'Customer PII & OAuth Tokens', residency: 'AWS us-west-2' },
+      { name: 'Telemetry Analytics Pipeline', dataHandled: 'Encrypted Log Data', residency: 'AWS eu-central-1' },
+    ],
+  },
   { id: 'vend-002', name: 'SecureAuth Identity', code: 'VND-002', criticality: 'Tier 1', riskLevel: 'Critical', riskScore: 92, evidenceStatus: 'Verified', assessmentStatus: 'Completed', openIssues: 8, owner: 'Marcus Chen', monitoringStatus: 'Active', lastMaterialChange: 'Today, 08:30 AM' , status: 'Active', inherentRisk: 98, residualRisk: 92, contractStart: '2023-06-01', contractEnd: '2026-06-01' },
-  { id: 'vend-003', name: 'Apex Gateway Payments', code: 'VND-003', criticality: 'Tier 1', riskLevel: 'High', riskScore: 76, evidenceStatus: 'Expiring', assessmentStatus: 'Pending Review', openIssues: 3, owner: 'Sarah Jenkins', monitoringStatus: 'Active', lastMaterialChange: 'Yesterday, 11:14 AM' , status: 'Active', inherentRisk: 88, residualRisk: 76, contractStart: '2024-03-10', contractEnd: '2027-03-10' },
+  {
+    id: 'vend-003', name: 'Apex Gateway Payments', code: 'VND-003', category: 'Financial Infrastructure', domain: 'apexpayments.com',
+    criticality: 'Tier 1', riskLevel: 'High', riskScore: 76, evidenceStatus: 'Expiring', assessmentStatus: 'Pending Review', openIssues: 3,
+    owner: 'Sarah Jenkins', monitoringStatus: 'Active', lastMaterialChange: 'Yesterday, 11:14 AM', status: 'Active', inherentRisk: 88, residualRisk: 76,
+    contractStart: '2024-03-10', contractEnd: '2027-03-10',
+    dependentSystems: [{ name: 'Global Payment Gateway API', dataHandled: 'PCI-DSS Financial Data', residency: 'AWS us-east-1' }],
+  },
   { id: 'vend-004', name: 'DataFlow Analytics', code: 'VND-004', criticality: 'Tier 2', riskLevel: 'Moderate', riskScore: 52, evidenceStatus: 'Verified', assessmentStatus: 'Completed', openIssues: 1, owner: 'Alex Rivera', monitoringStatus: 'Active', lastMaterialChange: 'Oct 3, 16:45' , status: 'Active', inherentRisk: 65, residualRisk: 52, contractStart: '2024-09-01', contractEnd: '2026-09-01' },
   { id: 'vend-005', name: 'GlobalHR Systems', code: 'VND-005', criticality: 'Tier 2', riskLevel: 'Moderate', riskScore: 48, evidenceStatus: 'Missing', assessmentStatus: 'Completed', openIssues: 2, owner: 'Sarah Jenkins', monitoringStatus: 'Active', lastMaterialChange: 'Oct 2, 09:10 AM' , status: 'Active', inherentRisk: 60, residualRisk: 48, contractStart: '2023-11-20', contractEnd: '2026-11-20' },
   { id: 'vend-006', name: 'LogiChain Logistics', code: 'VND-006', criticality: 'Tier 3', riskLevel: 'Low', riskScore: 22, evidenceStatus: 'Missing', assessmentStatus: 'Completed', openIssues: 0, owner: 'Alex Rivera', monitoringStatus: 'Paused', lastMaterialChange: 'Sep 28, 14:00' , status: 'Active', inherentRisk: 35, residualRisk: 22, contractStart: '2024-05-15', contractEnd: '2027-05-15' },

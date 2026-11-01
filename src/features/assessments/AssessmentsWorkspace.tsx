@@ -383,7 +383,7 @@ export function AssessmentsWorkspace() {
 
  <td className="py-4 px-4 w-40">
  <div className="flex items-center gap-3">
- <div className="w-full h-2 bg-border-border-subtle rounded-full overflow-hidden" role="progressbar" aria-valuenow={assessment.progress} aria-valuemin={0} aria-valuemax={100} aria-label="Completion progress">
+ <div className="w-full h-2 bg-border-subtle rounded-full overflow-hidden" role="progressbar" aria-valuenow={assessment.progress} aria-valuemin={0} aria-valuemax={100} aria-label="Completion progress">
  <div 
  className={`h-full rounded-full transition-all duration-500 ${assessment.progress === 100 ? 'bg-status-success' : 'bg-info'}`} 
  style={{ width: `${assessment.progress}%` }} 
@@ -408,7 +408,7 @@ export function AssessmentsWorkspace() {
  {assessment.evidenceCoverage}%
  </span>
  </div>
- <div className="w-full h-1.5 bg-border-border-subtle rounded-full overflow-hidden" role="progressbar" aria-valuenow={assessment.evidenceCoverage} aria-valuemin={0} aria-valuemax={100} aria-label="Evidence coverage">
+ <div className="w-full h-1.5 bg-border-subtle rounded-full overflow-hidden" role="progressbar" aria-valuenow={assessment.evidenceCoverage} aria-valuemin={0} aria-valuemax={100} aria-label="Evidence coverage">
  <div 
  className={`h-full rounded-full transition-all duration-500 ${assessment.evidenceCoverage > 80 ? 'bg-status-success' : assessment.evidenceCoverage < 40 ? 'bg-status-warning' : 'bg-accent'}`} 
  style={{ width: `${assessment.evidenceCoverage}%` }} 

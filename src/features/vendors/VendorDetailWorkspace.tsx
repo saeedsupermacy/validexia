@@ -11,19 +11,17 @@ import { WhyThisExposure } from './WhyThisExposure';
 import { BusinessImpactSection } from './BusinessImpactSection';
 import { RiskDimensionsSection } from './RiskDimensionsSection';
 import { hasAuthoredDetail, buildExposureModel, buildBusinessImpactModel, buildRiskDimensionsModel } from './vendorDetailModel';
-import { DEMO_VENDORS } from '../../fixtures/DEMO_SCENARIO';
 import { offboardVendor, getVendorsWithStatus } from '../../data/vendors';
 import type { VendorRecord } from '../../data/vendors';
 import { getEvidenceForVendor } from '../../data/evidence';
 import { getRemediationsForVendor, addRemediation, type RemediationSeverity } from '../../data/remediation';
-import { getCustomDecisionsForVendor, addDecision } from '../../data/decisions';
-import type { DecisionType } from '../decisions/DecisionsWorkspace';
+import { getDecisionsForVendor, addDecision, type DecisionType } from '../../data/decisions';
 import { recordMaterialChange } from '../../data/materialChanges';
 import { showToast } from '../../shared/ui/toast';
 import { auditStore } from '../audit/auditStore';
 import { Dialog } from '../../shared/ui/Dialog';
 
-/** Merged view-model: canonical VendorRecord fields + optional rich fixture overlays. */
+/** Detail view-model: canonical vendor fields plus related shared evidence/remediation/decision records. */
 export interface VendorDetailViewModel extends VendorRecord {
  category: string;
  domain: string;
@@ -72,7 +70,6 @@ export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorD
  const sharedVendor = getVendorsWithStatus().find(v => v.id === vendorId) || getVendorsWithStatus()[0];
  const resolvedId = sharedVendor?.id ?? vendorId;
  const resolvedName = sharedVendor?.name ?? 'Unknown Vendor';
- const fixtureVendor = DEMO_VENDORS.find(v => v.id === resolvedId);
 
  // Evidence / remediation / decisions come from the live stores (demo seeds +
  // anything the user created), so this page can never disagree with the tabs.
@@ -86,7 +83,7 @@ export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorD
  [resolvedId, refreshTick]
  );
  const storeDecisions = useMemo(
- () => getCustomDecisionsForVendor(resolvedId),
+ () => getDecisionsForVendor(resolvedId),
  [resolvedId, refreshTick]
  );
 
@@ -114,15 +111,12 @@ export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorD
   criticality: sharedVendor?.criticality ?? 'Tier 2',
   monitoringStatus: sharedVendor?.monitoringStatus ?? '—',
   lastMaterialChange: sharedVendor?.lastMaterialChange ?? '—',
-  category: fixtureVendor?.category ?? '—',
-  domain: fixtureVendor?.domain ?? sharedVendor?.website ?? '',
-  dependentSystems: fixtureVendor?.dependentSystems ?? [],
+  category: sharedVendor?.category ?? '—',
+  domain: sharedVendor?.domain ?? sharedVendor?.website ?? '',
+  dependentSystems: sharedVendor?.dependentSystems ?? [],
   evidence: storeEvidence.map(ev => ({ name: ev.artifactName, status: ev.status, date: ev.expirationDate, confidence: ev.confidence })),
   remediation: storeRemediations.map(r => ({ id: r.id, title: r.title, owner: r.owner, aging: `${r.agingDays}d`, severity: r.severity })),
-  decisions: [
-   ...storeDecisions.map(d => ({ date: d.timestamp, action: d.decisionTitle, actor: d.decisionMaker, rationale: d.decisionRationale })),
-   ...(fixtureVendor?.decisions ?? []),
-  ],
+  decisions: storeDecisions.map(d => ({ date: d.timestamp, action: d.decisionTitle, actor: d.decisionMaker, rationale: d.decisionRationale })),
  };
 
  const isTerminated = vendor.status === 'Terminated';
@@ -276,13 +270,13 @@ export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorD
  <button role="menuitem" disabled={isTerminated} onClick={() => { setIsActionsOpen(false); setIsDecisionOpen(true); }} className="w-full text-left px-3 py-2 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-hover rounded-lg flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-secondary">
  <Gavel size={14} strokeWidth={1.5} /> Create Decision
  </button>
- <div className="h-px bg-border-border-subtle my-1" />
+ <div className="h-px bg-border-subtle my-1" />
  <button role="menuitem" onClick={() => { setIsActionsOpen(false); if (vendor.domain) window.open(`https://${vendor.domain}`, '_blank', 'noopener'); }} className="w-full text-left px-3 py-2 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-hover rounded-lg flex items-center gap-2">
  <ExternalLink size={14} strokeWidth={1.5} /> Open Vendor Portal
  </button>
  {!isTerminated && (
  <>
- <div className="h-px bg-border-border-subtle my-1" />
+ <div className="h-px bg-border-subtle my-1" />
  <button role="menuitem" onClick={() => { setIsActionsOpen(false); setIsOffboardOpen(true); setOffboardChecklist({ accessRevoked: false, dataDestroyed: false, contractsClosed: false }); }} className="w-full text-left px-3 py-2 text-xs font-medium text-risk-critical hover:bg-risk-critical/10 rounded-lg flex items-center gap-2">
  <UserX size={14} strokeWidth={1.5} /> Offboard Vendor
  </button>

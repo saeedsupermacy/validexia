@@ -142,6 +142,8 @@ export function VendorPortalWorkspace() {
 
   return (
     <div className="space-y-6">
+      {/* Page title for accessibility — breadcrumb is hidden on mobile */}
+      <h1 className="text-page-title">Vendor Portal</h1>
       {/* Vendor context banner */}
       <div className="bg-info/5 border border-info/20 rounded-xl px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">

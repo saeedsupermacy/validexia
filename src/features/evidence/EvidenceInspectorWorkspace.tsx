@@ -351,8 +351,8 @@ export function EvidenceInspectorWorkspace({
 
      <div className="w-full bg-surface p-6 rounded-xl border border-border shadow-sm opacity-60 space-y-2">
       <span className="text-[10px] uppercase font-bold text-text-tertiary block">[Page 2 Preview - System Configuration Schedule]</span>
-      <div className="h-4 w-3/4 bg-border-border rounded" />
-      <div className="h-4 w-1/2 bg-border-border rounded" />
+      <div className="h-4 w-3/4 bg-border rounded" />
+      <div className="h-4 w-1/2 bg-border rounded" />
      </div>
     </div>
 

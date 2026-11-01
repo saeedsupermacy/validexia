@@ -46,7 +46,7 @@ export function AIAnalysisCard({ result, onApprove, onReject, onEdit }: AIAnalys
  {/* Decorative AI Accent */}
  <div aria-hidden="true" className="absolute top-0 left-0 w-1 h-full bg-accent"></div>
  
- <CardHeader className="border-b border-border px-5 py-4 bg-accent-muted/30 /10">
+ <CardHeader className="border-b border-border px-5 py-4 bg-accent-muted/30">
  <div className="flex items-center justify-between">
  <div className="flex items-center gap-2">
  <div aria-hidden="true" className="p-1.5 rounded-md bg-accent-muted/40 text-accent">

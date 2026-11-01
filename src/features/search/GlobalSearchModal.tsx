@@ -249,9 +249,9 @@ export function GlobalSearchModal({ isOpen, onClose }: GlobalSearchModalProps) {
  type="button"
  data-index={idx}
  onMouseEnter={() => setSelectedIndex(idx)}
- onClick={() => { const view = result.url.split('/')[1] as 'vendors' | 'assessments' | 'evidence' | 'risk-events' | 'monitoring' | 'remediation' | 'decisions' | 'audit-log'; navigateTo(view || 'command'); onClose(); }}
+ onClick={() => { const parts = result.url.split('/'); const view = parts[1] as 'vendors' | 'assessments' | 'evidence' | 'risk-events' | 'monitoring' | 'remediation' | 'decisions' | 'audit-log'; const id = parts[2]; if (view === 'vendors' && id) navigateTo('vendors', { vendorId: id }); else navigateTo(view || 'command'); onClose(); }}
  className={`w-full flex items-start gap-3 p-3 rounded-md text-left transition-colors focus:outline-none focus:ring-2 focus:ring-info ${
- isSelected ? 'bg-surface-hover border-transparent ring-1 ring-border-border-strong' : 'bg-transparent border border-transparent hover:bg-surface-hover'
+ isSelected ? 'bg-surface-hover border-transparent ring-1 ring-border-strong' : 'bg-transparent border border-transparent hover:bg-surface-hover'
  }`}
  role="option"
  aria-selected={isSelected}
@@ -269,7 +269,7 @@ export function GlobalSearchModal({ isOpen, onClose }: GlobalSearchModalProps) {
  </p>
  {result.metadata && (
  <>
- <span aria-hidden="true" className="w-1 h-1 rounded-full bg-border-border-strong shrink-0" />
+ <span aria-hidden="true" className={`w-1 h-1 rounded-full bg-border-strong shrink-0`} />
  <span className="text-xs text-text-tertiary truncate">{result.metadata}</span>
  </>
  )}

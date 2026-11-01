@@ -204,14 +204,14 @@ export function EvidenceConfidenceView() {
  }}
  className={`w-full text-left p-3 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-info ${
  isSelected 
- ? 'bg-surface border-border-strong shadow-sm ring-1 ring-border-border-strong' 
+ ? 'bg-surface border-border-strong shadow-sm ring-1 ring-border-strong' 
  : 'bg-surface border-transparent hover:border-border'
  }`}
  >
  <div className="font-bold text-text-primary text-sm mb-2">{profile.vendorName}</div>
  <div className="flex items-center gap-2">
  {getRiskBadge(profile.assessedRisk)}
- <span className="text-border-border-strong" aria-hidden="true">+</span>
+ <span className="text-border-strong" aria-hidden="true">+</span>
  {getConfidenceBadge(profile.overallConfidence)}
  </div>
  </button>
@@ -238,7 +238,7 @@ export function EvidenceConfidenceView() {
  <span className="text-xs font-semibold text-text-secondary">Assessed Risk:</span>
  {getRiskBadge(selectedProfile.assessedRisk)}
  </div>
- <div aria-hidden="true" className="w-px h-4 bg-border-border"></div>
+ <div aria-hidden="true" className="w-px h-4 bg-border"></div>
  <div className="flex items-center gap-1.5">
  <ShieldCheck aria-hidden="true" size={14} className="text-text-secondary" />
  <span className="text-xs font-semibold text-text-secondary">Data Confidence:</span>

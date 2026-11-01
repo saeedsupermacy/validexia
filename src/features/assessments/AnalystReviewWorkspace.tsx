@@ -149,7 +149,7 @@ export function AnalystReviewWorkspace({ vendorName, onBack }: AnalystReviewWork
  <ArrowLeft aria-hidden="true" size={14} />
  <span>Back to Assessment</span>
  </Button>
- <div aria-hidden="true" className="h-4 w-px bg-border-border"></div>
+ <div aria-hidden="true" className="h-4 w-px bg-border"></div>
  <div>
  <h1 className="text-lg font-bold text-text-primary">Defensible Review: {vendorName}</h1>
  <p className="text-xs text-text-secondary">Evaluate vendor assertions against expected compliance baselines.</p>

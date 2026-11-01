@@ -290,7 +290,7 @@ export function ReportsWorkspace() {
  </div>
 
  <div className="md:col-span-2 space-y-6">
- <Card className="shadow-sm border-accent/25 bg-accent-muted/20 /10">
+ <Card className="shadow-sm border-accent/25 bg-accent-muted/20">
  <CardHeader className="border-b border-border px-6 py-4 bg-surface-hover/30">
  <CardTitle className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2 text-accent">
  <Shield aria-hidden="true" size={16} /> Audience Blueprint & Governing Objective

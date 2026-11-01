@@ -55,7 +55,7 @@ function getSeverityStyles(severity: ChangeSeverity) {
  case 'high': return 'bg-risk-high ring-risk-high/30';
  case 'moderate': return 'bg-risk-moderate ring-risk-moderate/30';
  case 'low': return 'bg-status-info ring-status-info/30';
- case 'info': return 'bg-text-text-tertiary ring-border-border-strong';
+ case 'info': return 'bg-text-tertiary ring-border-strong';
  }
 }
 

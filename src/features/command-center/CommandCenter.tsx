@@ -6,6 +6,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent, Button, Eyebrow, CountUp} from '../../shared/ui/core';
 import { PortfolioRiskCard } from './PortfolioRiskCard';
 import { getVendors } from '../../data/vendors';
+import { getDecisions } from '../../data/decisions';
 import { PortfolioPulse } from './PortfolioPulse';
 import { materialChanges24h } from '../../data/materialChanges';
 import { RiskEventsSummaryCard } from './RiskEventsSummaryCard';
@@ -123,12 +124,6 @@ export function getTriageItems(): TriageItem[] {
  return [...DEV_TRIAGE_ITEMS, ...buildContractTriageItems()];
 }
 
-const DEV_DECISIONS = [
- { id: 'd1', action: 'Rejected offshore subprocessor', entity: 'CloudScale Infrastructure', user: 'S. Jenkins', date: 'Oct 5, 09:14 AM' },
- { id: 'd2', action: 'Accepted risk (Low)', entity: 'DataFlow Analytics', user: 'M. Chen', date: 'Oct 4, 14:30 PM' },
- { id: 'd3', action: 'Requested evidence update', entity: 'SecureAuth Identity', user: 'System (Auto)', date: 'Oct 3, 08:00 AM' },
-];
-
 const getCategoryIcon = (category: TriageItem['category']) => {
  switch (category) {
  case 'remediation': return <ShieldAlert aria-hidden="true" size={16} className="text-risk-critical" strokeWidth={2} />;
@@ -151,6 +146,7 @@ const getStatusBadgeStyles = (status: TriageStatus) => {
 
 export function CommandCenter() {
  const triageItems = getTriageItems();
+ const recentDecisions = getDecisions().slice(0, 3);
  const handleTriageNavigate = (item: TriageItem) => {
  const viewMap: Record<string, ViewKey> = {
  remediation: 'remediation',
@@ -362,20 +358,20 @@ export function CommandCenter() {
  </tr>
  </thead>
  <tbody className="divide-y divide-border-subtle bg-surface">
- {DEV_DECISIONS.map((decision) => (
+ {recentDecisions.map((decision) => (
  <tr
  key={decision.id}
- onClick={() => navigateTo('decisions', { search: decision.entity })}
- onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigateTo('decisions', { search: decision.entity }); }}
+ onClick={() => navigateTo('decisions', { search: decision.id })}
+ onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigateTo('decisions', { search: decision.id }); }}
  tabIndex={0}
  role="button"
- aria-label={`Decision: ${decision.action} for ${decision.entity}. View decisions.`}
+ aria-label={`Decision: ${decision.decisionTitle} for ${decision.vendorName}. View decision ${decision.id}.` }
  className="hover:bg-surface-hover transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-info focus:ring-inset"
  >
- <td className="py-3.5 px-6 text-text-tertiary tabular-nums font-mono text-xs">{decision.date}</td>
- <td className="py-3.5 px-6 text-text-primary font-semibold">{decision.action}</td>
- <td className="py-3.5 px-6 text-text-secondary font-medium">{decision.entity}</td>
- <td className="py-3.5 px-6 text-text-secondary">{decision.user}</td>
+ <td className="py-3.5 px-6 text-text-tertiary tabular-nums font-mono text-xs">{decision.timestamp}</td>
+ <td className="py-3.5 px-6 text-text-primary font-semibold">{decision.decisionTitle}</td>
+ <td className="py-3.5 px-6 text-text-secondary font-medium">{decision.vendorName}</td>
+ <td className="py-3.5 px-6 text-text-secondary">{decision.decisionMaker}</td>
  </tr>
  ))}
  </tbody>

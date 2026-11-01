@@ -107,7 +107,7 @@ export function AIResponsePanel({ response, onApprove, onReject, onModify, onFee
 
  <div className="flex items-center gap-3">
  {getConfidenceBadge(response.confidence)}
- <div aria-hidden="true" className="h-3 w-px bg-border-border"></div>
+ <div aria-hidden="true" className="h-3 w-px bg-border"></div>
  <button 
  type="button"
  onClick={handleCopy}

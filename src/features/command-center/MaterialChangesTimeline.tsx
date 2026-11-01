@@ -71,7 +71,7 @@ export function MaterialChangesTimeline() {
 
  <CardContent className="p-6 flex-1">
  <div className="relative pl-5 space-y-2">
- <div className="absolute left-8.5 top-4 bottom-4 w-0.5 bg-border-border-strong -z-0" aria-hidden="true" />
+ <div className="absolute left-8.5 top-4 bottom-4 w-0.5 bg-border-strong -z-0" aria-hidden="true" />
 
  {filteredEvents.length > 0 ? (
  filteredEvents.map(event => (

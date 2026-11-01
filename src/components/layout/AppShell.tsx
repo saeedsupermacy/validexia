@@ -484,7 +484,7 @@ const toggleTheme = () => {
  </div>
  )}
  </div>
- <div aria-hidden="true" className="w-px h-4 bg-default mx-1 hidden sm:block" />
+ <div aria-hidden="true" className="w-px h-4 bg-border mx-1 hidden sm:block" />
  <div className="relative flex items-center pl-1">
  <button 
  type="button"

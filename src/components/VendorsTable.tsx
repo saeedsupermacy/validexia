@@ -309,7 +309,7 @@ export function VendorsTable() {
  if (typeof aVal === 'number' && typeof bVal === 'number') return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
  return 0;
  });
- }, [filters, sortField, sortDirection]);
+ }, [vendors, filters, sortField, sortDirection]);
 
  const activeFilterCount = useMemo(() => {
  return filters.riskLevels.length + filters.criticalities.length + filters.evidenceStatuses.length + 
