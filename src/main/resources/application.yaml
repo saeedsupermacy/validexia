@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: validexia-backend
+  datasource:
+    # The running application ALWAYS connects as the restricted role.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/validexia}
+    username: ${DB_USER:validexia_app}
+    password: ${DB_PASSWORD:}
+  flyway:
+    # Flyway connects as the migrator (object owner), never as the app role.
+    # If FLYWAY_USER is unset, Flyway falls back to the datasource credentials;
+    # production deployments must set the migrator credentials explicitly.
+    enabled: ${FLYWAY_ENABLED:true}
+    user: ${FLYWAY_USER:}
+    password: ${FLYWAY_PASSWORD:}
+    locations: classpath:db/migration
+
+server:
+  port: 8080
+
+validexia:
+  version: 0.1.0
+  clerk:
+    issuer: ${CLERK_ISSUER:}
+    jwks-url: ${CLERK_JWKS_URL:}
+    # Comma-separated origins allowed in the azp claim, when present.
+    authorized-parties: ${CLERK_AZP:}
+    # Our verifier's own token-lifetime ceiling (seconds). Clerk's default
+    # session-token lifetime is configurable, so the design never relies on it.
+    max-token-lifetime-seconds: 120
+    clock-skew-seconds: 5
+    webhook-signing-secret: ${CLERK_WEBHOOK_SIGNING_SECRET:}
+    # When empty, the locked-only JIT resync and remote session revocation are
+    # disabled (the local sid denylist still applies).
+    secret-key: ${CLERK_SECRET_KEY:}
+    api-base-url: https://api.clerk.com
