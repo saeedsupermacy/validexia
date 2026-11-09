@@ -65,7 +65,9 @@ public class ClerkJwksProvider {
 
   private synchronized void refreshIfDue() {
     long now = System.currentTimeMillis();
-    if (cache != null && now - lastFetchAttemptMs < refreshThrottleMs) {
+    if (lastFetchAttemptMs != 0 && now - lastFetchAttemptMs < refreshThrottleMs) {
+      // Recently attempted (successfully or not): serve the cache as-is. On a cold
+      // start the caller then fails closed instead of hammering a down endpoint.
       return;
     }
     lastFetchAttemptMs = now;

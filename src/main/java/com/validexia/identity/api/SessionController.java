@@ -1,8 +1,7 @@
 package com.validexia.identity.api;
 
-import com.validexia.audit.AuditService;
-import com.validexia.identity.infrastructure.DirectoryRepository;
-import com.validexia.identity.infrastructure.DirectoryRepository.MembershipView;
+import com.validexia.identity.application.SessionService;
+import com.validexia.identity.application.SessionService.Membership;
 import com.validexia.platform.errors.ApiException;
 import com.validexia.platform.security.RequestContext;
 import java.util.List;
@@ -30,21 +29,17 @@ public class SessionController {
 
   public record ActiveTenantResponse(UUID tenantId, String tenantName, String role) {}
 
-  private final DirectoryRepository directory;
-  private final AuditService audit;
+  private final SessionService sessions;
 
-  public SessionController(DirectoryRepository directory, AuditService audit) {
-    this.directory = directory;
-    this.audit = audit;
+  public SessionController(SessionService sessions) {
+    this.sessions = sessions;
   }
 
   @GetMapping("/session")
   public SessionResponse session() {
     RequestContext.Context context = RequestContext.require();
     List<MembershipDto> memberships =
-        directory.listMemberships(context.subject()).stream()
-            .map(SessionController::toDto)
-            .toList();
+        sessions.memberships(context.subject()).stream().map(SessionController::toDto).toList();
     return new SessionResponse(
         new UserView(context.userId(), context.subject()), memberships, context.tenantId());
   }
@@ -60,26 +55,20 @@ public class SessionController {
       throw ApiException.validation("tenantId is required");
     }
     RequestContext.Context context = RequestContext.require();
-    MembershipView membership =
-        directory.listMemberships(context.subject()).stream()
-            .filter(m -> m.tenantId().equals(request.tenantId()) && "active".equals(m.status()))
-            .findFirst()
+    Membership membership =
+        sessions
+            .activeMembership(context.subject(), request.tenantId())
             .orElseThrow(
                 () ->
                     ApiException.forbidden(
                         "TENANT_ACCESS_DENIED", "Not an active member of the selected tenant"));
-    audit.appendForTenant(
-        membership.tenantId(),
-        context.userId(),
-        "TENANT_CONTEXT_ESTABLISHED",
-        "SESSION",
-        context.sessionId(),
-        "{\"method\": \"clerk\"}");
+    sessions.recordTenantContextEstablished(membership, context);
     return new ActiveTenantResponse(
         membership.tenantId(), membership.tenantName(), membership.role());
   }
 
-  private static MembershipDto toDto(MembershipView view) {
-    return new MembershipDto(view.tenantId(), view.tenantName(), view.role(), view.status());
+  private static MembershipDto toDto(Membership membership) {
+    return new MembershipDto(
+        membership.tenantId(), membership.tenantName(), membership.role(), membership.status());
   }
 }

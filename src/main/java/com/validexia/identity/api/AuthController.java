@@ -1,10 +1,7 @@
 package com.validexia.identity.api;
 
-import com.validexia.audit.AuditService;
-import com.validexia.identity.application.ClerkBackendClient;
-import com.validexia.identity.infrastructure.DirectoryRepository;
+import com.validexia.identity.application.SessionService;
 import com.validexia.platform.security.RequestContext;
-import java.time.Instant;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,30 +16,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1")
 public class AuthController {
 
-  private final DirectoryRepository directory;
-  private final ClerkBackendClient clerk;
-  private final AuditService audit;
+  private final SessionService sessions;
 
-  public AuthController(
-      DirectoryRepository directory, ClerkBackendClient clerk, AuditService audit) {
-    this.directory = directory;
-    this.clerk = clerk;
-    this.audit = audit;
+  public AuthController(SessionService sessions) {
+    this.sessions = sessions;
   }
 
   @PostMapping("/auth/logout")
   public ResponseEntity<Void> logout() {
-    RequestContext.Context context = RequestContext.require();
-    directory.recordSessionRevocation(
-        context.sessionId(), context.subject(), Instant.now().plusSeconds(3600));
-    clerk.revokeSession(context.sessionId());
-    if (context.tenantId() != null) {
-      audit.appendForTenant(
-          context.tenantId(), context.userId(), "LOGOUT", "SESSION", context.sessionId(), "{}");
-    } else {
-      audit.appendSystem(
-          "USER", context.userId().toString(), "LOGOUT", "SESSION", context.sessionId(), "{}");
-    }
+    sessions.logout(RequestContext.require());
     return ResponseEntity.noContent().build();
   }
 }

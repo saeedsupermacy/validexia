@@ -21,9 +21,13 @@ public record ClerkProperties(
     long jwksRefreshThrottleMs) {
 
   public ClerkProperties {
-    if (authorizedParties == null) {
-      authorizedParties = List.of();
-    }
+    authorizedParties =
+        authorizedParties == null
+            ? List.of()
+            : authorizedParties.stream()
+                .filter(p -> p != null && !p.isBlank())
+                .map(String::trim)
+                .toList();
     if (maxTokenLifetimeSeconds <= 0) {
       maxTokenLifetimeSeconds = 120;
     }
