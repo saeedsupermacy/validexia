@@ -68,7 +68,8 @@ RETURNS TABLE (user_id uuid, status text, banned boolean, locked boolean,
                deprovisioned boolean, tokens_valid_after timestamptz)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
-    SELECT u.id, u.status, u.banned, u.locked, u.deprovisioned, u.tokens_valid_after
+    SELECT u.id, u.status, u.banned, u.locked, u.deprovisioned,
+           nullif(u.tokens_valid_after, '-infinity'::timestamptz)
     FROM public.users u
     WHERE u.external_subject = p_subject
 $$;
