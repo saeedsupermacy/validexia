@@ -13,14 +13,14 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * Database bootstrap for integration tests (M02-1 v2.6 §9).
  *
  * <p>Default path (CI): a real PostgreSQL via Testcontainers, image pinned to {@code postgres:17}.
- * Local fallback: when {@code VALIDEXIA_TEST_DB_URL} (plus {@code _USER}/{@code _PASSWORD}) is
- * set, that externally managed database is used instead — same migrations, same assertions. The
- * database named by the URL must be freshly created and disposable.
+ * Local fallback: when {@code VALIDEXIA_TEST_DB_URL} (plus {@code _USER}/{@code _PASSWORD}) is set,
+ * that externally managed database is used instead — same migrations, same assertions. The database
+ * named by the URL must be freshly created and disposable.
  *
  * <p>Bootstrap order matters and mirrors deployment: Flyway migrates as the ADMIN (migrator)
  * connection, then the admin sets the application role's password, and only then is the Spring
- * context allowed to start — its datasource connects as {@code validexia_app}, so every
- * integration assertion runs under the restricted role's real permissions.
+ * context allowed to start — its datasource connects as {@code validexia_app}, so every integration
+ * assertion runs under the restricted role's real permissions.
  */
 public final class TestDatabase {
 

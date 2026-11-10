@@ -48,8 +48,7 @@ class SessionFlowTest {
   private final JdbcTemplate admin = TestDatabase.adminJdbc();
 
   private String token(String subject, String sid, Instant issuedAt) throws Exception {
-    return TestTokens.mint(
-        TestClerkConfig.key(), issuedAt, 60, Map.of("sub", subject, "sid", sid));
+    return TestTokens.mint(TestClerkConfig.key(), issuedAt, 60, Map.of("sub", subject, "sid", sid));
   }
 
   @Test
@@ -68,7 +67,8 @@ class SessionFlowTest {
   void firstRequestProvisionsTheUser() throws Exception {
     String subject = "user_flow_" + UUID.randomUUID();
     mvc.perform(
-            get("/api/v1/session").header("Authorization", "Bearer " + token(subject, "sess_p", Instant.now())))
+            get("/api/v1/session")
+                .header("Authorization", "Bearer " + token(subject, "sess_p", Instant.now())))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.user.subject").value(subject))
         .andExpect(jsonPath("$.memberships").isArray());
@@ -80,11 +80,13 @@ class SessionFlowTest {
     UUID tenantId = UUID.randomUUID();
     admin.update(
         "INSERT INTO public.tenants (id, name, slug) VALUES (?, 'Flow Tenant', ?)",
-        tenantId, "flow-" + tenantId);
+        tenantId,
+        "flow-" + tenantId);
     UUID userId = repository.provisionUser(subject, null, null);
     admin.update(
         "INSERT INTO public.memberships (user_id, tenant_id, role) VALUES (?, ?, 'admin')",
-        userId, tenantId);
+        userId,
+        tenantId);
     String token = token(subject, "sess_t", Instant.now());
 
     mvc.perform(get("/api/v1/session").header("Authorization", "Bearer " + token))
@@ -151,7 +153,8 @@ class SessionFlowTest {
     repository.provisionUser(banned, null, null);
     repository.applyLifecycle(banned, null, true, null, null, past);
     mvc.perform(
-            get("/api/v1/session").header("Authorization", "Bearer " + token(banned, "sess_b", Instant.now())))
+            get("/api/v1/session")
+                .header("Authorization", "Bearer " + token(banned, "sess_b", Instant.now())))
         .andExpect(status().isForbidden())
         .andExpect(jsonPath("$.code").value("ACCOUNT_BANNED"));
 
@@ -159,7 +162,8 @@ class SessionFlowTest {
     repository.provisionUser(locked, null, null);
     repository.applyLifecycle(locked, null, null, true, null, past);
     mvc.perform(
-            get("/api/v1/session").header("Authorization", "Bearer " + token(locked, "sess_l", Instant.now())))
+            get("/api/v1/session")
+                .header("Authorization", "Bearer " + token(locked, "sess_l", Instant.now())))
         .andExpect(status().isForbidden())
         .andExpect(jsonPath("$.code").value("ACCOUNT_LOCKED"));
 
@@ -187,7 +191,9 @@ class SessionFlowTest {
     // A token minted after the transition works again.
     mvc.perform(
             get("/api/v1/session")
-                .header("Authorization", "Bearer " + token(subject, "sess_epoch2", Instant.now().plusSeconds(2))))
+                .header(
+                    "Authorization",
+                    "Bearer " + token(subject, "sess_epoch2", Instant.now().plusSeconds(2))))
         .andExpect(status().isOk());
   }
 }

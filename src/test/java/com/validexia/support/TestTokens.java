@@ -60,11 +60,12 @@ public final class TestTokens {
     claims.put("azp", "https://app.validexia.test");
     claims.putAll(overrides);
     JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder();
-    claims.forEach((name, value) -> {
-      if (value != null) {
-        builder.claim(name, value);
-      }
-    });
+    claims.forEach(
+        (name, value) -> {
+          if (value != null) {
+            builder.claim(name, value);
+          }
+        });
     builder.issueTime(Date.from(issuedAt));
     builder.notBeforeTime(Date.from(issuedAt.minusSeconds(10)));
     builder.expirationTime(Date.from(issuedAt.plusSeconds(lifetimeSeconds)));

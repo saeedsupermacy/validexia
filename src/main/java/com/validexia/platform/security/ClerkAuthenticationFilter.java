@@ -18,12 +18,11 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Authenticates every {@code /api/v1/**} request (except the health probe and the webhook
- * receiver) from its Clerk session token, then establishes the request context (M02-1 v2.6 §2):
- * directory lookup with lazy provisioning, lifecycle gating (with the locked-only JIT resync),
- * the {@code tokens_valid_after} epoch check, the session denylist, and per-request tenant
- * selection via {@code X-Tenant-Id} (never trusted — membership is re-verified here, on every
- * request).
+ * Authenticates every {@code /api/v1/**} request (except the health probe and the webhook receiver)
+ * from its Clerk session token, then establishes the request context (M02-1 v2.6 §2): directory
+ * lookup with lazy provisioning, lifecycle gating (with the locked-only JIT resync), the {@code
+ * tokens_valid_after} epoch check, the session denylist, and per-request tenant selection via
+ * {@code X-Tenant-Id} (never trusted — membership is re-verified here, on every request).
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)

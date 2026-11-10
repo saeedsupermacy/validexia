@@ -65,7 +65,9 @@ class ClerkWebhookTest {
     Mac mac = Mac.getInstance("HmacSHA256");
     mac.init(new SecretKeySpec(KEY_BYTES, "HmacSHA256"));
     String signature =
-        "v1," + Base64.getEncoder().encodeToString(mac.doFinal(content.getBytes(StandardCharsets.UTF_8)));
+        "v1,"
+            + Base64.getEncoder()
+                .encodeToString(mac.doFinal(content.getBytes(StandardCharsets.UTF_8)));
     if (!validSignature) {
       signature = "v1," + Base64.getEncoder().encodeToString(new byte[32]);
     }
@@ -78,12 +80,21 @@ class ClerkWebhookTest {
             .content(payload));
   }
 
-  private static String userUpdated(String subject, boolean banned, boolean locked, long updatedAtMs) {
-    return "{\"type\":\"user.updated\",\"data\":{\"id\":\"" + subject + "\","
+  private static String userUpdated(
+      String subject, boolean banned, boolean locked, long updatedAtMs) {
+    return "{\"type\":\"user.updated\",\"data\":{\"id\":\""
+        + subject
+        + "\","
         + "\"first_name\":\"Wh\",\"last_name\":\"User\","
         + "\"email_addresses\":[{\"email_address\":\"wh@example.test\"}],"
-        + "\"banned\":" + banned + ",\"locked\":" + locked + ",\"deprovisioned\":false,"
-        + "\"updated_at\":" + updatedAtMs + "}}";
+        + "\"banned\":"
+        + banned
+        + ",\"locked\":"
+        + locked
+        + ",\"deprovisioned\":false,"
+        + "\"updated_at\":"
+        + updatedAtMs
+        + "}}";
   }
 
   @Test
@@ -94,8 +105,10 @@ class ClerkWebhookTest {
         .andExpect(status().isOk());
     var user = repository.findUser(subject).orElseThrow();
     assertTrue(user.banned());
-    assertEquals("wh@example.test", admin.queryForObject(
-        "SELECT email FROM public.users WHERE external_subject = ?", String.class, subject));
+    assertEquals(
+        "wh@example.test",
+        admin.queryForObject(
+            "SELECT email FROM public.users WHERE external_subject = ?", String.class, subject));
   }
 
   @Test
@@ -136,8 +149,7 @@ class ClerkWebhookTest {
     deliver("msg_" + UUID.randomUUID(), userUpdated(subject, false, false, older), true)
         .andExpect(status().isOk());
     assertTrue(
-        repository.findUser(subject).orElseThrow().banned(),
-        "the stale unban must be ignored");
+        repository.findUser(subject).orElseThrow().banned(), "the stale unban must be ignored");
   }
 
   @Test
@@ -145,7 +157,8 @@ class ClerkWebhookTest {
     String subject = "user_wh_" + UUID.randomUUID();
     String payload =
         "{\"type\":\"session.revoked\",\"data\":{\"id\":\"sess_wh_revoked\",\"user_id\":\""
-            + subject + "\"}}";
+            + subject
+            + "\"}}";
     deliver("msg_" + UUID.randomUUID(), payload, true).andExpect(status().isOk());
     assertTrue(repository.isSessionRevoked("sess_wh_revoked"));
   }

@@ -21,9 +21,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Tenant isolation against the REAL pool (size 1, from TestDatabase): context is transaction
- * -local, so sequential transactions on the same physical connection cannot leak tenants into
- * each other — including after a rollback (M02-1 v2.6 §1). A scratch probe table stands in for
- * future tenant-owned tables; audit_events provides the same proof for a real M02-1 table.
+ * -local, so sequential transactions on the same physical connection cannot leak tenants into each
+ * other — including after a rollback (M02-1 v2.6 §1). A scratch probe table stands in for future
+ * tenant-owned tables; audit_events provides the same proof for a real M02-1 table.
  */
 @SpringBootTest
 class RlsIsolationTest {
@@ -44,8 +44,7 @@ class RlsIsolationTest {
   @BeforeAll
   static void seed() {
     ADMIN.execute("DROP TABLE IF EXISTS public.rls_probe");
-    ADMIN.execute(
-        "CREATE TABLE public.rls_probe (tenant_key text NOT NULL, note text NOT NULL)");
+    ADMIN.execute("CREATE TABLE public.rls_probe (tenant_key text NOT NULL, note text NOT NULL)");
     ADMIN.execute("ALTER TABLE public.rls_probe ENABLE ROW LEVEL SECURITY");
     ADMIN.execute("ALTER TABLE public.rls_probe FORCE ROW LEVEL SECURITY");
     ADMIN.execute(

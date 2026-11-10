@@ -17,8 +17,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * tenant into another request.
  *
  * <p>Values resolve in order: explicit {@link TenantContext} (service layer) → {@link
- * RequestContext} (authentication filter) → empty strings, which match no tenant and no user
- * (fail closed).
+ * RequestContext} (authentication filter) → empty strings, which match no tenant and no user (fail
+ * closed).
  */
 public class TenantTransactionManager extends DataSourceTransactionManager {
 
@@ -27,7 +27,8 @@ public class TenantTransactionManager extends DataSourceTransactionManager {
   }
 
   @Override
-  protected void doBegin(Object transaction, org.springframework.transaction.TransactionDefinition definition) {
+  protected void doBegin(
+      Object transaction, org.springframework.transaction.TransactionDefinition definition) {
     super.doBegin(transaction, definition);
     DataSource dataSource = getDataSource();
     Object resource = TransactionSynchronizationManager.getResource(dataSource);

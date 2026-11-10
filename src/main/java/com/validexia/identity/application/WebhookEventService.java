@@ -11,11 +11,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Clerk webhook processing (M02-1 v2.6 §2). Idempotency is insert-first: the event row, the
- * state change, and the outcome marking commit in ONE transaction. A transient failure rolls
- * everything back (the event row disappears), so Svix's redelivery reprocesses from scratch. A
- * deterministic "poison" event is instead recorded and marked {@code failed} in a separate
- * transaction, then acknowledged — redelivering it would never succeed.
+ * Clerk webhook processing (M02-1 v2.6 §2). Idempotency is insert-first: the event row, the state
+ * change, and the outcome marking commit in ONE transaction. A transient failure rolls everything
+ * back (the event row disappears), so Svix's redelivery reprocesses from scratch. A deterministic
+ * "poison" event is instead recorded and marked {@code failed} in a separate transaction, then
+ * acknowledged — redelivering it would never succeed.
  *
  * <p>Clerk webhook deliveries are not guaranteed and may arrive out of order or more than once;
  * convergence comes from the per-field timestamp ordering inside the directory functions.
@@ -122,12 +122,7 @@ public class WebhookEventService {
     // The user.updated payload is the mandatory backstop for ALL flag state: Clerk has no
     // ban/lock webhook events. Absent field = the event says nothing about that flag.
     directory.applyLifecycle(
-        subject,
-        null,
-        flag(data, "banned"),
-        flag(data, "locked"),
-        flag(data, "deprovisioned"),
-        ts);
+        subject, null, flag(data, "banned"), flag(data, "locked"), flag(data, "deprovisioned"), ts);
   }
 
   private @Nullable Boolean flag(JsonNode data, String field) {

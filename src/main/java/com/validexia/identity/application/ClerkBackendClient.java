@@ -16,8 +16,8 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Minimal Clerk Backend API client: fetch a user (for the locked-only JIT resync) and revoke a
- * session (on logout). Both are best-effort from the caller's perspective; failures are reported
- * as empty/exception and never change local state by themselves.
+ * session (on logout). Both are best-effort from the caller's perspective; failures are reported as
+ * empty/exception and never change local state by themselves.
  */
 @Component
 public class ClerkBackendClient {
@@ -37,7 +37,8 @@ public class ClerkBackendClient {
   }
 
   /** Test-facing constructor: injects the HTTP client so tests need no live network. */
-  public ClerkBackendClient(ClerkProperties properties, ObjectMapper mapper, HttpClient httpClient) {
+  public ClerkBackendClient(
+      ClerkProperties properties, ObjectMapper mapper, HttpClient httpClient) {
     this.properties = properties;
     this.mapper = mapper;
     this.httpClient = httpClient;
@@ -49,8 +50,7 @@ public class ClerkBackendClient {
     }
     try {
       HttpRequest request =
-          HttpRequest.newBuilder(
-                  URI.create(properties.apiBaseUrl() + "/v1/users/" + subject))
+          HttpRequest.newBuilder(URI.create(properties.apiBaseUrl() + "/v1/users/" + subject))
               .timeout(Duration.ofSeconds(5))
               .header("Authorization", "Bearer " + properties.secretKey())
               .GET()

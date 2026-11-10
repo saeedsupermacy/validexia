@@ -23,8 +23,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Audit-chain guarantees from the application role's seat (M02-1 v2.6 §6): the database assigns
- * ordering and hashes, forged caller values are discarded, tampering is detected, and the app
- * role has no path around the trigger.
+ * ordering and hashes, forged caller values are discarded, tampering is detected, and the app role
+ * has no path around the trigger.
  */
 @SpringBootTest
 class AuditChainTest {
@@ -52,7 +52,8 @@ class AuditChainTest {
         admin.query(
             "SELECT seq, encode(prev_hash, 'hex') AS prev, encode(event_hash, 'hex') AS hash"
                 + " FROM public.audit_events WHERE tenant_key = ? ORDER BY seq",
-            (rs, n) -> new String[] {rs.getString("seq"), rs.getString("prev"), rs.getString("hash")},
+            (rs, n) ->
+                new String[] {rs.getString("seq"), rs.getString("prev"), rs.getString("hash")},
             tenant.toString());
     assertEquals(3, rows.size());
     assertEquals("1", rows.get(0)[0]);
@@ -81,7 +82,9 @@ class AuditChainTest {
     }
     Long seq =
         admin.queryForObject(
-            "SELECT seq FROM public.audit_events WHERE tenant_key = ?", Long.class, tenant.toString());
+            "SELECT seq FROM public.audit_events WHERE tenant_key = ?",
+            Long.class,
+            tenant.toString());
     assertEquals(1L, seq, "the trigger assigns the real sequence, not the caller's 999");
     assertTrue(audit.verifyChain(tenant.toString()).ok());
   }
@@ -110,7 +113,8 @@ class AuditChainTest {
         () -> appJdbc.update("UPDATE public.audit_events SET action = 'X'"));
     assertThrows(
         DataAccessException.class,
-        () -> appJdbc.queryForObject("SELECT count(*) FROM public.audit_chain_heads", Integer.class));
+        () ->
+            appJdbc.queryForObject("SELECT count(*) FROM public.audit_chain_heads", Integer.class));
     assertThrows(
         DataAccessException.class,
         () -> appJdbc.queryForObject("SELECT public.audit_events_chain_trigger()", Object.class));

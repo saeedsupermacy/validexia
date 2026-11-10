@@ -17,9 +17,9 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Statement-order proof (M02-1 v2.6 §1): a recording proxy around the DataSource shows the
- * {@code set_config} pair is the FIRST statement of the transaction, carrying the exact context
- * values — RLS never evaluates a query before its context exists.
+ * Statement-order proof (M02-1 v2.6 §1): a recording proxy around the DataSource shows the {@code
+ * set_config} pair is the FIRST statement of the transaction, carrying the exact context values —
+ * RLS never evaluates a query before its context exists.
  */
 class TenantContextOrderingTest {
 
@@ -50,7 +50,8 @@ class TenantContextOrderingTest {
     assertEquals("SELECT 1", statements.get(1).sql());
   }
 
-  private static DataSource recordingDataSource(DriverManagerDataSource delegate, List<Recorded> sink) {
+  private static DataSource recordingDataSource(
+      DriverManagerDataSource delegate, List<Recorded> sink) {
     return (DataSource)
         Proxy.newProxyInstance(
             TenantContextOrderingTest.class.getClassLoader(),
@@ -69,7 +70,8 @@ class TenantContextOrderingTest {
         (proxy, method, args) -> {
           Object result = method.invoke(delegate, args);
           if (result instanceof PreparedStatement ps
-              && ("prepareStatement".equals(method.getName()) || "prepareCall".equals(method.getName()))) {
+              && ("prepareStatement".equals(method.getName())
+                  || "prepareCall".equals(method.getName()))) {
             return wrapStatement(ps, String.valueOf(args[0]), sink);
           }
           return result;
@@ -81,11 +83,15 @@ class TenantContextOrderingTest {
             handler);
   }
 
-  private static PreparedStatement wrapStatement(PreparedStatement delegate, String sql, List<Recorded> sink) {
+  private static PreparedStatement wrapStatement(
+      PreparedStatement delegate, String sql, List<Recorded> sink) {
     Recorded recorded = new Recorded(sql, new java.util.TreeMap<>());
     InvocationHandler handler =
         (proxy, method, args) -> {
-          if (method.getName().startsWith("set") && args != null && args.length >= 2 && args[0] instanceof Integer index) {
+          if (method.getName().startsWith("set")
+              && args != null
+              && args.length >= 2
+              && args[0] instanceof Integer index) {
             recorded.params().put(index, args[1]);
           }
           if (method.getName().startsWith("execute")) {

@@ -23,9 +23,9 @@ class SvixSignatureVerifierTest {
     }
   }
 
-  private static final String SECRET =
-      "whsec_" + Base64.getEncoder().encodeToString(KEY_BYTES);
-  private static final byte[] BODY = "{\"type\":\"user.updated\",\"data\":{}}".getBytes(StandardCharsets.UTF_8);
+  private static final String SECRET = "whsec_" + Base64.getEncoder().encodeToString(KEY_BYTES);
+  private static final byte[] BODY =
+      "{\"type\":\"user.updated\",\"data\":{}}".getBytes(StandardCharsets.UTF_8);
 
   private final SvixSignatureVerifier verifier =
       new SvixSignatureVerifier(Clock.fixed(NOW, ZoneOffset.UTC));
@@ -34,7 +34,8 @@ class SvixSignatureVerifierTest {
     String content = id + "." + timestamp + "." + new String(body, StandardCharsets.UTF_8);
     Mac mac = Mac.getInstance("HmacSHA256");
     mac.init(new SecretKeySpec(KEY_BYTES, "HmacSHA256"));
-    return "v1," + Base64.getEncoder().encodeToString(mac.doFinal(content.getBytes(StandardCharsets.UTF_8)));
+    return "v1,"
+        + Base64.getEncoder().encodeToString(mac.doFinal(content.getBytes(StandardCharsets.UTF_8)));
   }
 
   @Test

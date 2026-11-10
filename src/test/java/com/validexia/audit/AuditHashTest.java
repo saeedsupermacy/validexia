@@ -9,9 +9,9 @@ import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
 
 /**
- * Cross-checks the canonical audit hash serialization (M02-1 v2.5 §3) in Java against the
- * normative test vectors. The PostgreSQL trigger implements the same encoding; AuditChainTest
- * proves the database reproduces these hashes end-to-end.
+ * Cross-checks the canonical audit hash serialization (M02-1 v2.5 §3) in Java against the normative
+ * test vectors. The PostgreSQL trigger implements the same encoding; AuditChainTest proves the
+ * database reproduces these hashes end-to-end.
  */
 class AuditHashTest {
 
@@ -70,14 +70,34 @@ class AuditHashTest {
   @Test
   void vectorA() throws Exception {
     String actual =
-        hash(GENESIS, "SYSTEM", 1, "SYSTEM", null, "CHAIN_GENESIS", "AUDIT_CHAIN", null, "{}", 1735689600000000L);
+        hash(
+            GENESIS,
+            "SYSTEM",
+            1,
+            "SYSTEM",
+            null,
+            "CHAIN_GENESIS",
+            "AUDIT_CHAIN",
+            null,
+            "{}",
+            1735689600000000L);
     assertEquals("c6cd4709f4b4be900dc02e44d4819366f04cde7d06925f0fba1238d61fcbd81b", actual);
   }
 
   @Test
   void vectorD_nullVersusEmptyString() throws Exception {
     String actual =
-        hash(GENESIS, "SYSTEM", 1, "SYSTEM", "", "CHAIN_GENESIS", "AUDIT_CHAIN", null, "{}", 1735689600000000L);
+        hash(
+            GENESIS,
+            "SYSTEM",
+            1,
+            "SYSTEM",
+            "",
+            "CHAIN_GENESIS",
+            "AUDIT_CHAIN",
+            null,
+            "{}",
+            1735689600000000L);
     assertEquals("1695f9873628ff3a859e450370aff49262569da4507f4dd3c53c549b4ed6e0e5", actual);
   }
 

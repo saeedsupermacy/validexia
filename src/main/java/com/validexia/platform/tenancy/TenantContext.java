@@ -4,10 +4,10 @@ import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Explicit tenant context for service-layer work that runs outside (or ahead of) the
- * request filter — principally audit appends, where the service selects the tenant bucket before
- * opening its transaction. {@link TenantTransactionManager} reads this first, then falls back to
- * the request context, then to empty values (which match nothing: fail closed).
+ * Explicit tenant context for service-layer work that runs outside (or ahead of) the request filter
+ * — principally audit appends, where the service selects the tenant bucket before opening its
+ * transaction. {@link TenantTransactionManager} reads this first, then falls back to the request
+ * context, then to empty values (which match nothing: fail closed).
  */
 public final class TenantContext {
 

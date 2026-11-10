@@ -46,12 +46,14 @@ public class SvixSignatureVerifier {
     }
     byte[] key;
     try {
-      String base64 = signingSecret.startsWith("whsec_") ? signingSecret.substring(6) : signingSecret;
+      String base64 =
+          signingSecret.startsWith("whsec_") ? signingSecret.substring(6) : signingSecret;
       key = Base64.getDecoder().decode(base64);
     } catch (IllegalArgumentException e) {
       return false;
     }
-    String signedContent = svixId + "." + svixTimestamp + "." + new String(rawBody, StandardCharsets.UTF_8);
+    String signedContent =
+        svixId + "." + svixTimestamp + "." + new String(rawBody, StandardCharsets.UTF_8);
     byte[] expected;
     try {
       Mac mac = Mac.getInstance("HmacSHA256");

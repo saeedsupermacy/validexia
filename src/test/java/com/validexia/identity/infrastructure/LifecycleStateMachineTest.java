@@ -14,8 +14,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Lifecycle convergence rules (M02-1 v2.6 §2/§5): independent per-flag timestamps, restrictive
- * tie-breaks, epoch bumps only on false→true, tombstones, merge semantics, and snapshot safety.
- * All calls run as the application role through the definer functions.
+ * tie-breaks, epoch bumps only on false→true, tombstones, merge semantics, and snapshot safety. All
+ * calls run as the application role through the definer functions.
  */
 class LifecycleStateMachineTest {
 
@@ -109,17 +109,20 @@ class LifecycleStateMachineTest {
     UUID tenantId = UUID.randomUUID();
     admin.update(
         "INSERT INTO public.tenants (id, name, slug) VALUES (?, 'Merge Tenant', ?)",
-        tenantId, "merge-" + tenantId);
+        tenantId,
+        "merge-" + tenantId);
     String survivor = freshUser();
     String removed = freshUser();
     UUID survivorId = user(survivor).userId();
     UUID removedId = user(removed).userId();
     admin.update(
         "INSERT INTO public.memberships (user_id, tenant_id, role) VALUES (?, ?, 'member')",
-        survivorId, tenantId);
+        survivorId,
+        tenantId);
     admin.update(
         "INSERT INTO public.memberships (user_id, tenant_id, role) VALUES (?, ?, 'owner')",
-        removedId, tenantId);
+        removedId,
+        tenantId);
 
     repository.mergeUsers(survivor, removed, ts(7000));
 

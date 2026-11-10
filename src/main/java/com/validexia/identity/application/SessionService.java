@@ -11,8 +11,8 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 
 /**
- * Session-facing application service: the controllers' only path to directory data (layering
- * rule — repositories are used by services, never by the API layer directly).
+ * Session-facing application service: the controllers' only path to directory data (layering rule —
+ * repositories are used by services, never by the API layer directly).
  */
 @Service
 public class SessionService {
@@ -21,7 +21,8 @@ public class SessionService {
   private final ClerkBackendClient clerk;
   private final AuditService audit;
 
-  public SessionService(DirectoryRepository directory, ClerkBackendClient clerk, AuditService audit) {
+  public SessionService(
+      DirectoryRepository directory, ClerkBackendClient clerk, AuditService audit) {
     this.directory = directory;
     this.clerk = clerk;
     this.audit = audit;
@@ -46,7 +47,8 @@ public class SessionService {
   }
 
   /** Establishing a tenant context is audited in that tenant's chain. */
-  public void recordTenantContextEstablished(Membership membership, RequestContext.Context context) {
+  public void recordTenantContextEstablished(
+      Membership membership, RequestContext.Context context) {
     audit.appendForTenant(
         membership.tenantId(),
         context.userId(),
