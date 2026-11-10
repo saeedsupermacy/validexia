@@ -57,6 +57,8 @@ tasks.withType<JavaCompile>().configureEach {
         options.annotationProcessorPath = configurations.getByName("errorprone")
         options.compilerArgs.addAll(
             listOf(
+                // Error Prone rejects Gradle's default INIT policy (CI catch, 2026-11-10).
+                "--should-stop=ifError=FLOW",
                 "-XDcompilePolicy=simple",
                 "-XDaddTypeAnnotationsToSymbol=true",
                 "-Xplugin:ErrorProne -XepAllErrorsAsWarnings" +
