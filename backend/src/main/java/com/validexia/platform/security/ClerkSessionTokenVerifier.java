@@ -74,9 +74,11 @@ public class ClerkSessionTokenVerifier {
     }
     Instant now = clock.instant();
     long skew = properties.clockSkewSeconds();
-    Instant expiresAt = claims.getExpirationTime() == null ? null : claims.getExpirationTime().toInstant();
+    Instant expiresAt =
+        claims.getExpirationTime() == null ? null : claims.getExpirationTime().toInstant();
     Instant issuedAt = claims.getIssueTime() == null ? null : claims.getIssueTime().toInstant();
-    Instant notBefore = claims.getNotBeforeTime() == null ? null : claims.getNotBeforeTime().toInstant();
+    Instant notBefore =
+        claims.getNotBeforeTime() == null ? null : claims.getNotBeforeTime().toInstant();
     if (expiresAt == null || issuedAt == null) {
       throw new TokenValidationException("Token is missing exp or iat");
     }

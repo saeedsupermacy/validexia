@@ -49,12 +49,17 @@ class RlsConfigurationTest {
   void applicationRoleHasNoDirectTableGrantsOnDirectoryOrSecurityTables() {
     for (String table :
         new String[] {
-          "users", "tenants", "memberships", "revoked_sessions", "webhook_events",
+          "users",
+          "tenants",
+          "memberships",
+          "revoked_sessions",
+          "webhook_events",
           "audit_chain_heads"
         }) {
       Boolean any =
           admin.queryForObject(
-              "SELECT has_table_privilege('validexia_app', 'public.' || ?, 'SELECT,INSERT,UPDATE,DELETE')",
+              "SELECT has_table_privilege('validexia_app', 'public.' || ?,"
+                  + " 'SELECT,INSERT,UPDATE,DELETE')",
               Boolean.class,
               table);
       assertFalse(any, "validexia_app must have no DML privilege on " + table);
@@ -77,11 +82,13 @@ class RlsConfigurationTest {
             Boolean.class));
     assertTrue(
         admin.queryForObject(
-            "SELECT has_function_privilege('validexia_app', 'public.audit_verify_chain(text)', 'EXECUTE')",
+            "SELECT has_function_privilege('validexia_app', 'public.audit_verify_chain(text)',"
+                + " 'EXECUTE')",
             Boolean.class));
     assertFalse(
         admin.queryForObject(
-            "SELECT has_function_privilege('validexia_app', 'public.audit_events_chain_trigger()', 'EXECUTE')",
+            "SELECT has_function_privilege('validexia_app', 'public.audit_events_chain_trigger()',"
+                + " 'EXECUTE')",
             Boolean.class));
   }
 
@@ -89,7 +96,8 @@ class RlsConfigurationTest {
   void auditEventsHasRlsEnabledAndForced() {
     Boolean ok =
         admin.queryForObject(
-            "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'public.audit_events'::regclass",
+            "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid ="
+                + " 'public.audit_events'::regclass",
             Boolean.class);
     assertTrue(ok);
   }

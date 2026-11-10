@@ -23,11 +23,21 @@ class DirectoryFunctionSecurityTest {
 
   @Test
   void directTableAccessIsDenied() {
-    assertThrows(DataAccessException.class, () -> app.queryForObject("SELECT count(*) FROM public.users", Integer.class));
-    assertThrows(DataAccessException.class, () -> app.queryForObject("SELECT count(*) FROM public.tenants", Integer.class));
-    assertThrows(DataAccessException.class, () -> app.queryForObject("SELECT count(*) FROM public.memberships", Integer.class));
-    assertThrows(DataAccessException.class, () -> app.queryForObject("SELECT count(*) FROM public.revoked_sessions", Integer.class));
-    assertThrows(DataAccessException.class, () -> app.queryForObject("SELECT count(*) FROM public.webhook_events", Integer.class));
+    assertThrows(
+        DataAccessException.class,
+        () -> app.queryForObject("SELECT count(*) FROM public.users", Integer.class));
+    assertThrows(
+        DataAccessException.class,
+        () -> app.queryForObject("SELECT count(*) FROM public.tenants", Integer.class));
+    assertThrows(
+        DataAccessException.class,
+        () -> app.queryForObject("SELECT count(*) FROM public.memberships", Integer.class));
+    assertThrows(
+        DataAccessException.class,
+        () -> app.queryForObject("SELECT count(*) FROM public.revoked_sessions", Integer.class));
+    assertThrows(
+        DataAccessException.class,
+        () -> app.queryForObject("SELECT count(*) FROM public.webhook_events", Integer.class));
   }
 
   @Test
@@ -44,10 +54,11 @@ class DirectoryFunctionSecurityTest {
     String subject = "user_hostile_" + UUID.randomUUID();
     repository.provisionUser(subject, "real@example.test", null);
     admin.execute("CREATE SCHEMA IF NOT EXISTS evil");
-    admin.execute(
-        "CREATE TABLE IF NOT EXISTS evil.users (external_subject text, email text)");
+    admin.execute("CREATE TABLE IF NOT EXISTS evil.users (external_subject text, email text)");
     admin.update(
-        "INSERT INTO evil.users VALUES ('" + subject + "', 'attacker@evil.test')"
+        "INSERT INTO evil.users VALUES ('"
+            + subject
+            + "', 'attacker@evil.test')"
             + " ON CONFLICT DO NOTHING");
     // Even with the hostile schema first in the SESSION path, the qualified definer call with
     // its pinned pg_catalog, pg_temp path reads the real directory.

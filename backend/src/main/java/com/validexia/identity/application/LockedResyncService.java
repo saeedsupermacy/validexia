@@ -14,8 +14,8 @@ import org.springframework.stereotype.Service;
  * <ol>
  *   <li><b>Claim</b> — one atomic conditional UPDATE in the database ({@code claim_resync}); the
  *       claim commits with that statement, and a failed fetch still consumes the window.
- *   <li><b>Fetch</b> — the Clerk API call happens outside any database transaction; this service
- *       is invoked from the authentication filter, before any request transaction exists.
+ *   <li><b>Fetch</b> — the Clerk API call happens outside any database transaction; this service is
+ *       invoked from the authentication filter, before any request transaction exists.
  *   <li><b>Conditional apply</b> — the snapshot is applied per-flag by timestamp (never touching
  *       status), so a delayed response cannot overwrite newer webhook state.
  * </ol>

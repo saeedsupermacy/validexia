@@ -9,9 +9,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 /**
- * Layering rules (M02-1 v2.6 §1): controllers never reach data-access types directly (the
- * audited path is controller → application service → repository/function), and the low-level
- * platform packages never depend on feature packages.
+ * Layering rules (M02-1 v2.6 §1): controllers never reach data-access types directly (the audited
+ * path is controller → application service → repository/function), and the low-level platform
+ * packages never depend on feature packages.
  */
 class ArchitectureTest {
 
@@ -57,7 +57,8 @@ class ArchitectureTest {
             "com.validexia.platform.tenancy..")
         .should()
         .dependOnClassesThat()
-        .resideInAnyPackage("com.validexia.identity..", "com.validexia.audit..", "com.validexia.api..")
+        .resideInAnyPackage(
+            "com.validexia.identity..", "com.validexia.audit..", "com.validexia.api..")
         .check(classes);
   }
 

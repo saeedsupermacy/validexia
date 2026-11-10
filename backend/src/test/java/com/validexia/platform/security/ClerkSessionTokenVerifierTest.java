@@ -19,8 +19,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Token-verification matrix (M02-1 v2.6 §9). The JWKS document is served by a stub HTTP client —
- * no sockets — and the clock is fixed, so every case is deterministic.
+ * Token-verification matrix (M02-1 v2.6 §9). The JWKS document is served by a stub HTTP client — no
+ * sockets — and the clock is fixed, so every case is deterministic.
  */
 class ClerkSessionTokenVerifierTest {
 
@@ -37,7 +37,8 @@ class ClerkSessionTokenVerifierTest {
     StubHttpClient http =
         new StubHttpClient(request -> new StubHttpClient.StubResponse(200, jwksBody.get()));
     ClerkJwksProvider provider =
-        new ClerkJwksProvider(URI.create("https://clerk.test.example/.well-known/jwks.json"), 0, http);
+        new ClerkJwksProvider(
+            URI.create("https://clerk.test.example/.well-known/jwks.json"), 0, http);
     verifier =
         new ClerkSessionTokenVerifier(properties(), provider, Clock.fixed(NOW, ZoneOffset.UTC));
   }
@@ -98,8 +99,7 @@ class ClerkSessionTokenVerifierTest {
   @Test
   void rejectsUnlistedAzp() throws Exception {
     String token =
-        TestTokens.mint(
-            key, NOW.minusSeconds(30), 60, Map.of("azp", "https://phishing.example"));
+        TestTokens.mint(key, NOW.minusSeconds(30), 60, Map.of("azp", "https://phishing.example"));
     assertThrows(TokenValidationException.class, () -> verifier.verify(token));
   }
 

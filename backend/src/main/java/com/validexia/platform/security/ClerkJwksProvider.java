@@ -14,9 +14,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * In-memory JWKS cache (M02-1 v2.6 §1). Keys are looked up by {@code kid}; an unknown {@code kid}
- * triggers at most one throttled refetch (which absorbs Clerk key rotation). A failed refetch
- * keeps serving the last-good cache. A cold start with no cache fails closed: no key is ever
- * returned until a JWKS document has actually been fetched.
+ * triggers at most one throttled refetch (which absorbs Clerk key rotation). A failed refetch keeps
+ * serving the last-good cache. A cold start with no cache fails closed: no key is ever returned
+ * until a JWKS document has actually been fetched.
  */
 @Component
 public class ClerkJwksProvider {
@@ -32,8 +32,7 @@ public class ClerkJwksProvider {
     String url = properties.jwksUrl();
     this.jwksUri = URI.create(url == null ? "" : url);
     this.refreshThrottleMs = properties.jwksRefreshThrottleMs();
-    this.httpClient =
-        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+    this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
   }
 
   /** Test-facing constructor: injects the HTTP client and throttle. */

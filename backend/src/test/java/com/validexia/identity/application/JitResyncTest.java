@@ -20,8 +20,8 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The locked-only JIT resync safeguard (M02-1 v2.6): atomic claim, no transaction across the
- * fetch, stale snapshots lose. The Clerk API is a stub HTTP client — call counts are exact.
+ * The locked-only JIT resync safeguard (M02-1 v2.6): atomic claim, no transaction across the fetch,
+ * stale snapshots lose. The Clerk API is a stub HTTP client — call counts are exact.
  */
 class JitResyncTest {
 
@@ -29,12 +29,20 @@ class JitResyncTest {
 
   private ClerkProperties properties() {
     return new ClerkProperties(
-        "https://clerk.test.example", "", List.of(), 120, 5, "", "sk_test_secret",
-        "https://api.clerk.test", 0);
+        "https://clerk.test.example",
+        "",
+        List.of(),
+        120,
+        5,
+        "",
+        "sk_test_secret",
+        "https://api.clerk.test",
+        0);
   }
 
   private LockedResyncService serviceWith(StubHttpClient http) {
-    ClerkBackendClient client = new ClerkBackendClient(properties(), JsonMapper.builder().build(), http);
+    ClerkBackendClient client =
+        new ClerkBackendClient(properties(), JsonMapper.builder().build(), http);
     return new LockedResyncService(repository, client, properties());
   }
 
@@ -45,9 +53,17 @@ class JitResyncTest {
     return subject;
   }
 
-  private static String userJson(boolean banned, boolean locked, boolean deprovisioned, long updatedAtMs) {
-    return "{\"id\":\"x\",\"banned\":" + banned + ",\"locked\":" + locked
-        + ",\"deprovisioned\":" + deprovisioned + ",\"updated_at\":" + updatedAtMs + "}";
+  private static String userJson(
+      boolean banned, boolean locked, boolean deprovisioned, long updatedAtMs) {
+    return "{\"id\":\"x\",\"banned\":"
+        + banned
+        + ",\"locked\":"
+        + locked
+        + ",\"deprovisioned\":"
+        + deprovisioned
+        + ",\"updated_at\":"
+        + updatedAtMs
+        + "}";
   }
 
   @Test
@@ -55,7 +71,8 @@ class JitResyncTest {
     String subject = lockedUser();
     long nowMs = System.currentTimeMillis();
     StubHttpClient http =
-        new StubHttpClient(req -> new StubHttpClient.StubResponse(200, userJson(false, false, false, nowMs)));
+        new StubHttpClient(
+            req -> new StubHttpClient.StubResponse(200, userJson(false, false, false, nowMs)));
     serviceWith(http).tryResync(subject);
     assertFalse(repository.findUser(subject).orElseThrow().locked());
     assertEquals(1, http.callCount());
@@ -74,7 +91,9 @@ class JitResyncTest {
     assertEquals(1, http.callCount());
 
     // Clerk recovers immediately, but the claimed window throttles any new attempt.
-    response.set(new StubHttpClient.StubResponse(200, userJson(false, false, false, System.currentTimeMillis())));
+    response.set(
+        new StubHttpClient.StubResponse(
+            200, userJson(false, false, false, System.currentTimeMillis())));
     service.tryResync(subject);
     assertEquals(1, http.callCount(), "a failed fetch still consumes the 60-second window");
     assertTrue(repository.findUser(subject).orElseThrow().locked());
@@ -128,7 +147,8 @@ class JitResyncTest {
     // The snapshot predates the ban: it reports all-clear with an older updated_at.
     long staleMs = banTime.toEpochMilli() - 60_000;
     StubHttpClient http =
-        new StubHttpClient(req -> new StubHttpClient.StubResponse(200, userJson(false, false, false, staleMs)));
+        new StubHttpClient(
+            req -> new StubHttpClient.StubResponse(200, userJson(false, false, false, staleMs)));
     serviceWith(http).tryResync(subject);
     var user = repository.findUser(subject).orElseThrow();
     assertTrue(user.banned(), "stale snapshot must not clear a newer ban");

@@ -11,8 +11,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Audit append path (M02-1 v2.6 §6). Each append runs in its own transaction opened through the
  * tenant-aware transaction manager, with the tenant context set BEFORE the transaction begins, so
- * {@code set_config} is the transaction's first statement. Ordering and hashing are enforced by
- * the database trigger; this service only supplies the event fields.
+ * {@code set_config} is the transaction's first statement. Ordering and hashing are enforced by the
+ * database trigger; this service only supplies the event fields.
  */
 @Service
 public class AuditService {
@@ -38,7 +38,12 @@ public class AuditService {
       @Nullable String entityId,
       String detailsJson) {
     append(
-        tenantId.toString(), "USER", actorUserId.toString(), action, entityType, entityId,
+        tenantId.toString(),
+        "USER",
+        actorUserId.toString(),
+        action,
+        entityType,
+        entityId,
         detailsJson);
   }
 
@@ -66,9 +71,9 @@ public class AuditService {
       transactions.executeWithoutResult(
           tx ->
               jdbc.update(
-                  "INSERT INTO public.audit_events"
-                      + " (tenant_key, actor_type, actor_id, action, entity_type, entity_id, details)"
-                      + " VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb))",
+                  "INSERT INTO public.audit_events (tenant_key, actor_type, actor_id, action,"
+                      + " entity_type, entity_id, details) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS"
+                      + " jsonb))",
                   tenantKey,
                   actorType,
                   actorId,
