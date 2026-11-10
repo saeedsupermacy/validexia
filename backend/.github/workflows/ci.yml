@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # NOTE: the gradlew scripts are not committed yet (see README, "Gradle
+      # wrapper"), so CI installs the pinned Gradle directly. Once the wrapper
+      # scripts are generated and committed, switch this back to ./gradlew.
+      - name: Set up Gradle 9.1.0
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+
+      # GitHub-hosted runners provide a Docker daemon; Testcontainers starts
+      # the pinned postgres:17 image itself (see TestDatabase support class).
+      - name: Build and test
+        run: gradle clean build --stacktrace
+
+      - name: Test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/
+          if-no-files-found: ignore

@@ -1,0 +1,17 @@
+# Local development database ONLY (manual checks). Tests do not use this file:
+# CI runs the suite against Testcontainers (postgres:17). Never used in production.
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: validexia_migrator
+      POSTGRES_PASSWORD: validexia-migrator-dev
+      POSTGRES_DB: validexia
+    ports:
+      - "5432:5432"
+    volumes:
+      - validexia-db:/var/lib/postgresql/data
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  validexia-db:
