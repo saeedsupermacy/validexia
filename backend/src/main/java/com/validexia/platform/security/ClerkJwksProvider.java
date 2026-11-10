@@ -28,6 +28,7 @@ public class ClerkJwksProvider {
   private volatile @Nullable JWKSet cache;
   private long lastFetchAttemptMs;
 
+  @org.springframework.beans.factory.annotation.Autowired
   public ClerkJwksProvider(ClerkProperties properties) {
     String url = properties.jwksUrl();
     this.jwksUri = URI.create(url == null ? "" : url);
