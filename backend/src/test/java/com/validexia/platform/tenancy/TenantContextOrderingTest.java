@@ -34,8 +34,10 @@ class TenantContextOrderingTest {
 
     TenantContext.set("tenant-xyz", "user-abc");
     try {
+      // A bind-variable query: JdbcTemplate serves no-arg queries with a plain
+      // Statement, which this PreparedStatement-recording proxy cannot see.
       new TransactionTemplate(manager)
-          .executeWithoutResult(tx -> jdbc.queryForObject("SELECT 1", Integer.class));
+          .executeWithoutResult(tx -> jdbc.queryForObject("SELECT ?", Integer.class, 1));
     } finally {
       TenantContext.clear();
     }
@@ -47,7 +49,7 @@ class TenantContextOrderingTest {
         "first statement must establish context, was: " + first.sql());
     assertEquals("tenant-xyz", first.params().get(1));
     assertEquals("user-abc", first.params().get(2));
-    assertEquals("SELECT 1", statements.get(1).sql());
+    assertEquals("SELECT ?", statements.get(1).sql());
   }
 
   private static DataSource recordingDataSource(
