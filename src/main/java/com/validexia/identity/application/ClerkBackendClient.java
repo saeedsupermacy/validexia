@@ -32,6 +32,7 @@ public class ClerkBackendClient {
   private final HttpClient httpClient;
   private final ObjectMapper mapper;
 
+  @org.springframework.beans.factory.annotation.Autowired
   public ClerkBackendClient(ClerkProperties properties, ObjectMapper mapper) {
     this(properties, mapper, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build());
   }
