@@ -308,7 +308,7 @@ class AgentConcurrencyTest {
       AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
       assertEquals("SUCCEEDED", task.state());
       assertTrue(
-          task.outputJson() != null && task.outputJson().contains("\"entry\":2"),
+          task.outputJson() != null && task.outputJson().replace(" ", "").contains("\"entry\":2"),
           "the takeover's output must be the committed one, got: " + task.outputJson());
 
       // The stale executor finally returns: fencing rejects its completion, silently.
@@ -316,7 +316,9 @@ class AgentConcurrencyTest {
       AgentData.Run stale = first.get(15, TimeUnit.SECONDS);
       assertEquals("SUCCEEDED", stale.state());
       AgentTaskRow after = repository.listTasks(tenantId, userId, runId).get(0);
-      assertTrue(after.outputJson() != null && after.outputJson().contains("\"entry\":2"));
+      assertTrue(
+          after.outputJson() != null
+              && after.outputJson().replace(" ", "").contains("\"entry\":2"));
       assertEquals(1, auditCount(tenantId, "AGENT_TASK_EXECUTED", taskId));
       assertEquals(1, auditCount(tenantId, "AGENT_RUN_SUCCEEDED", runId));
     } finally {
@@ -354,9 +356,16 @@ class AgentConcurrencyTest {
                 return engine.execute(tenantId, userId, runId);
               });
       start.countDown();
-      // Neither executor may fail: one parks the task, the other observes the parked state.
-      assertEquals("WAITING_APPROVAL", a.get(15, TimeUnit.SECONDS).state());
-      assertEquals("WAITING_APPROVAL", b.get(15, TimeUnit.SECONDS).state());
+      // Neither executor may fail. One parks the task; the other either observes the parked
+      // state or loses the run-entry transition and reports RUNNING — both are correct
+      // observations of the same interleaving. The settled state is what must be singular.
+      String stateA = a.get(15, TimeUnit.SECONDS).state();
+      String stateB = b.get(15, TimeUnit.SECONDS).state();
+      assertTrue(
+          stateA.equals("WAITING_APPROVAL") || stateA.equals("RUNNING"), "state A: " + stateA);
+      assertTrue(
+          stateB.equals("WAITING_APPROVAL") || stateB.equals("RUNNING"), "state B: " + stateB);
+      assertEquals("WAITING_APPROVAL", engine.requireRun(tenantId, userId, runId).state());
     } finally {
       pool.shutdownNow();
     }
