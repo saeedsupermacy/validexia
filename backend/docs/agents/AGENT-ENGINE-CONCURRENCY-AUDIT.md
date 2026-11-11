@@ -48,6 +48,20 @@ real tool has **no stable dedupe key** to offer the external system. At-least-on
 delivery plus no dedupe key means duplicates are a matter of time once real tools
 land.
 
+Leasing and fencing (recommended fix items 1–3) bound what executors can commit
+to the *database*; they cannot by themselves guarantee exactly-once *external*
+execution. If a task's lease expires while its provider request is still in
+flight, a second executor can legitimately claim the task and issue a second
+provider request while the first is still executing — the database state stays
+consistent, and the outside world still sees two effects. The only defences at
+that boundary are provider-side: a stable idempotency key carried through the
+tool invocation (item 4), passed to the provider's idempotency mechanism
+wherever one exists, or used for equivalent deduplication. And where a provider
+call's outcome is **ambiguous** — a timeout or dropped connection after the
+request may already have been accepted — the correct response is reconciliation
+(query the provider for what the idempotency key actually did), never a blind
+retry, which turns an unknown outcome into a probable duplicate.
+
 ## Finding 2 — Approval parking races produce spurious HTTP 500s
 
 In `executeTask`, the ModeGate check and `request_agent_approval` happen **before**
@@ -132,9 +146,15 @@ concurrency will train clients not to retry — the opposite of its purpose.
    transitions it to `WAITING_APPROVAL`).
 3. **Honour every CAS result.** Append audit events only for transitions the
    executor actually won; on a lost CAS, re-read and return the current state.
-4. **Give tools their dedupe keys.** Extend the tool invocation context with
-   `runId`, `taskId`, and the task's idempotency key, and document the engine's
-   at-least-once semantics where tool authors will see them.
+4. **Give tools their dedupe keys — a hard gate, not an enhancement.** Extend
+   the tool invocation context with a stable idempotency key derived from the
+   run/task identity — identical across retries, requeues, and executors, never
+   per-attempt — plus `runId` and `taskId`. Tools performing external writes
+   must pass that key to the provider's idempotency mechanism wherever one is
+   supported, or dedupe against it equivalently, and must resolve ambiguous
+   provider outcomes by reconciliation rather than blind retries (see
+   Finding 1). Document the engine's at-least-once semantics where tool authors
+   will see them.
 5. **Make run creation converge.** In `create_agent_run`, use
    `INSERT ... ON CONFLICT (tenant_id, idempotency_key) DO NOTHING` followed by
    a re-SELECT (or catch `unique_violation` and re-select), so concurrent
@@ -143,6 +163,9 @@ concurrency will train clients not to retry — the opposite of its purpose.
    no expired claims can return the current state immediately instead of walking
    tasks it cannot claim.
 
-**Gate recommendation:** items 1–3 should land before any tool with an external
-side effect (email, payments, third-party writes) is registered. Read-only and
+**Gate recommendation:** items 1–4 must **all** land before any tool with an
+external side effect (email, payments, third-party writes) is registered.
+Items 1–3 make executor behaviour safe inside the database; item 4 is what
+makes retries safe at the provider boundary, and exactly-once external
+execution cannot be guaranteed merely through database leases. Read-only and
 in-memory tools are safe under the current engine.
