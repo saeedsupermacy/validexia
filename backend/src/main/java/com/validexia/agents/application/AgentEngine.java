@@ -9,6 +9,8 @@ import com.validexia.agents.infrastructure.AgentsRepository;
 import com.validexia.agents.infrastructure.AgentsRepository.AgentApprovalRow;
 import com.validexia.agents.infrastructure.AgentsRepository.AgentRunRow;
 import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
+import com.validexia.agents.infrastructure.AgentsRepository.ClaimLostException;
+import com.validexia.agents.infrastructure.AgentsRepository.ClaimOutcome;
 import com.validexia.agents.infrastructure.AgentsRepository.CreateRunResult;
 import com.validexia.audit.AuditService;
 import java.util.List;
@@ -23,11 +25,24 @@ import org.springframework.stereotype.Service;
  * executes them in order under the run's autonomy mode. Every state change goes through the
  * repository's compare-and-swap transitions, so execution is resumable: a run that stopped —
  * waiting for approval, or because the process died mid-task — continues from its persisted state
- * without repeating completed tasks. Every meaningful transition is written to the audit chain with
- * the run's initiating user as the actor.
+ * without repeating completed tasks. Tasks are executed under leases with fencing (migration V7):
+ * an executor claims a task before touching it, only the claim owner can park or complete it, and a
+ * takeover is possible only after the lease expires — so concurrent executors divide a run's work
+ * instead of duplicating it, and stale executors cannot commit state. Every meaningful transition
+ * is written to the audit chain with the run's initiating user as the actor, and only by the
+ * executor whose transition actually won.
  */
 @Service
 public class AgentEngine {
+
+  /**
+   * How long a task claim lasts before another executor may treat the owner as dead and take over.
+   * Must exceed the slowest tool's expected runtime: fencing stops a stale owner from committing
+   * state afterwards, and tools carry the task's stable idempotency key so an in-flight provider
+   * call can be deduplicated or reconciled — but a lease comfortably longer than real tool latency
+   * keeps takeovers rare.
+   */
+  private static final int LEASE_SECONDS = 30;
 
   private final AgentsRepository repository;
   private final AgentRegistry agents;
@@ -89,6 +104,10 @@ public class AgentEngine {
   }
 
   private AgentRunRow executeRow(UUID tenantId, UUID userId, UUID runId) {
+    // Every execute() call is a distinct executor. Tasks are claimed under a lease owned by
+    // this id and fenced by the claim's attempt number, so a stale executor can never commit
+    // state after losing a task (migration V7; see the concurrency audit in docs/agents).
+    String executorId = UUID.randomUUID().toString();
     AgentRunRow run = requireRunRow(tenantId, userId, runId);
     RunState state = RunState.valueOf(run.state());
     if (state == RunState.SUCCEEDED || state == RunState.FAILED || state == RunState.CANCELLED) {
@@ -117,6 +136,8 @@ public class AgentEngine {
         return requireRunRow(tenantId, userId, runId);
       }
     }
+    // A RUNNING run may be entered freely: every task is claimed under a lease before it is
+    // touched, so concurrent executors divide the work instead of duplicating it.
 
     RunMode mode = RunMode.valueOf(run.mode());
     // A task a human already approved must not be parked again: the approval IS the gate
@@ -134,17 +155,7 @@ public class AgentEngine {
           // Already settled; never repeated.
         }
         case FAILED -> {
-          repository.transitionRun(
-              tenantId,
-              userId,
-              runId,
-              RunState.RUNNING.name(),
-              RunState.FAILED.name(),
-              null,
-              task.error() == null ? "A task failed" : task.error());
-          audit.appendForTenant(
-              tenantId, userId, "AGENT_RUN_FAILED", "agent_run", runId.toString(), "{}");
-          return requireRunRow(tenantId, userId, runId);
+          return failRun(tenantId, userId, run, task.error());
         }
         case WAITING_APPROVAL -> {
           repository.transitionRun(
@@ -157,30 +168,9 @@ public class AgentEngine {
               null);
           return requireRunRow(tenantId, userId, runId);
         }
-        case RUNNING -> {
-          // A previous executor died mid-task. Requeue it and execute it as PENDING.
-          repository.transitionTask(
-              tenantId,
-              userId,
-              task.id(),
-              TaskState.RUNNING.name(),
-              TaskState.PENDING.name(),
-              null,
-              null);
+        case PENDING, RUNNING -> {
           AgentRunRow outcome =
-              executeTask(
-                  tenantId,
-                  userId,
-                  run,
-                  mode,
-                  reloadTask(tenantId, userId, runId, task.id()),
-                  approvedTaskIds);
-          if (outcome != null) {
-            return outcome;
-          }
-        }
-        case PENDING -> {
-          AgentRunRow outcome = executeTask(tenantId, userId, run, mode, task, approvedTaskIds);
+              executeTask(tenantId, userId, run, mode, task, approvedTaskIds, executorId);
           if (outcome != null) {
             return outcome;
           }
@@ -191,27 +181,58 @@ public class AgentEngine {
       }
     }
 
-    int succeeded =
-        (int)
-            repository.listTasks(tenantId, userId, runId).stream()
-                .filter(t -> TaskState.valueOf(t.state()) == TaskState.SUCCEEDED)
-                .count();
-    repository.transitionRun(
-        tenantId,
-        userId,
-        runId,
-        RunState.RUNNING.name(),
-        RunState.SUCCEEDED.name(),
-        "{\"tasksSucceeded\":" + succeeded + "}",
-        null);
-    audit.appendForTenant(
-        tenantId, userId, "AGENT_RUN_SUCCEEDED", "agent_run", runId.toString(), "{}");
+    // Completion is claimed, not assumed: the run is marked SUCCEEDED only when a fresh read
+    // shows every task settled, and the audit event is written only if our CAS won the
+    // transition — a concurrent executor finishing the same run cannot duplicate it.
+    List<AgentTaskRow> settled = repository.listTasks(tenantId, userId, runId);
+    boolean allSettled =
+        settled.stream()
+            .allMatch(
+                t ->
+                    TaskState.valueOf(t.state()) == TaskState.SUCCEEDED
+                        || TaskState.valueOf(t.state()) == TaskState.SKIPPED
+                        || TaskState.valueOf(t.state()) == TaskState.CANCELLED);
+    if (allSettled) {
+      int succeeded =
+          (int)
+              settled.stream()
+                  .filter(t -> TaskState.valueOf(t.state()) == TaskState.SUCCEEDED)
+                  .count();
+      if (repository.transitionRun(
+          tenantId,
+          userId,
+          runId,
+          RunState.RUNNING.name(),
+          RunState.SUCCEEDED.name(),
+          "{\"tasksSucceeded\":" + succeeded + "}",
+          null)) {
+        audit.appendForTenant(
+            tenantId, userId, "AGENT_RUN_SUCCEEDED", "agent_run", runId.toString(), "{}");
+      }
+    }
     return requireRunRow(tenantId, userId, runId);
   }
 
+  /** Fails a run whose task failed; the audit event is written only if our CAS won. */
+  private AgentRunRow failRun(UUID tenantId, UUID userId, AgentRunRow run, @Nullable String error) {
+    if (repository.transitionRun(
+        tenantId,
+        userId,
+        run.id(),
+        RunState.RUNNING.name(),
+        RunState.FAILED.name(),
+        null,
+        error == null ? "A task failed" : error)) {
+      audit.appendForTenant(
+          tenantId, userId, "AGENT_RUN_FAILED", "agent_run", run.id().toString(), "{}");
+    }
+    return requireRunRow(tenantId, userId, run.id());
+  }
+
   /**
-   * Executes one PENDING task, or parks it for approval. Returns the run row when the run has left
-   * the RUNNING state (waiting or failed), or {@code null} to continue with the next task.
+   * Claims one task under a lease, then executes it or parks it for approval. Returns the run row
+   * when the walk must stop (the task was parked, the run failed, or another executor holds the
+   * work), or {@code null} to continue with the next task.
    */
   private @Nullable AgentRunRow executeTask(
       UUID tenantId,
@@ -219,21 +240,61 @@ public class AgentEngine {
       AgentRunRow run,
       RunMode mode,
       AgentTaskRow task,
-      Set<UUID> approvedTaskIds) {
-    RiskClass risk = RiskClass.valueOf(task.riskClass());
-    if (!approvedTaskIds.contains(task.id()) && ModeGate.requiresApproval(mode, risk)) {
-      UUID approvalId =
-          repository.requestApproval(
+      Set<UUID> approvedTaskIds,
+      String executorId) {
+    ClaimOutcome claim =
+        repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, LEASE_SECONDS);
+    if (!claim.claimed()) {
+      switch (TaskState.valueOf(claim.taskState())) {
+        case WAITING_APPROVAL -> {
+          repository.transitionRun(
               tenantId,
               userId,
-              task.id(),
-              "Tool "
-                  + task.toolKey()
-                  + " ("
-                  + risk.name()
-                  + ") requires approval in "
-                  + mode.name()
-                  + " mode");
+              run.id(),
+              RunState.RUNNING.name(),
+              RunState.WAITING_APPROVAL.name(),
+              null,
+              null);
+          return requireRunRow(tenantId, userId, run.id());
+        }
+        case FAILED -> {
+          AgentTaskRow current = reloadTask(tenantId, userId, run.id(), task.id());
+          return failRun(tenantId, userId, run, current.error());
+        }
+        case SUCCEEDED, SKIPPED, CANCELLED -> {
+          return null; // Another executor settled it; move on.
+        }
+        default -> {
+          // RUNNING under another executor's live lease: the work is spoken for. Stop the
+          // walk and report the run as it stands — never execute a second copy.
+          return requireRunRow(tenantId, userId, run.id());
+        }
+      }
+    }
+    int attempt = claim.attempt();
+    RiskClass risk = RiskClass.valueOf(task.riskClass());
+    if (!approvedTaskIds.contains(task.id()) && ModeGate.requiresApproval(mode, risk)) {
+      UUID approvalId;
+      try {
+        approvalId =
+            repository.parkTaskForApproval(
+                tenantId,
+                userId,
+                task.id(),
+                executorId,
+                attempt,
+                "Tool "
+                    + task.toolKey()
+                    + " ("
+                    + risk.name()
+                    + ") requires approval in "
+                    + mode.name()
+                    + " mode");
+      } catch (ClaimLostException claimLost) {
+        // The lease was taken over between claim and park; the new owner coordinates the
+        // task now. Losing quietly is correct — a duplicate approval or a 500 is not.
+        return requireRunRow(tenantId, userId, run.id());
+      }
       audit.appendForTenant(
           tenantId,
           userId,
@@ -251,27 +312,38 @@ public class AgentEngine {
           null);
       return requireRunRow(tenantId, userId, run.id());
     }
-    if (!repository.transitionTask(
-        tenantId,
-        userId,
-        task.id(),
-        TaskState.PENDING.name(),
-        TaskState.RUNNING.name(),
-        null,
-        null)) {
-      return null; // Another executor claimed it; move on.
-    }
     ToolHandler tool = tools.require(task.toolKey());
+    String output;
     try {
-      String output = tool.execute(task.inputJson());
-      repository.transitionTask(
+      output =
+          tool.execute(
+              new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt),
+              task.inputJson());
+    } catch (RuntimeException e) {
+      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+      if (repository.completeTask(
           tenantId,
           userId,
           task.id(),
-          TaskState.RUNNING.name(),
-          TaskState.SUCCEEDED.name(),
-          output,
-          null);
+          executorId,
+          attempt,
+          TaskState.FAILED.name(),
+          null,
+          message)) {
+        return failRun(tenantId, userId, run, message);
+      }
+      // The claim was lost while the tool ran; its failure is not ours to record.
+      return requireRunRow(tenantId, userId, run.id());
+    }
+    if (repository.completeTask(
+        tenantId,
+        userId,
+        task.id(),
+        executorId,
+        attempt,
+        TaskState.SUCCEEDED.name(),
+        output,
+        null)) {
       audit.appendForTenant(
           tenantId,
           userId,
@@ -280,28 +352,12 @@ public class AgentEngine {
           task.id().toString(),
           "{\"tool\":\"" + task.toolKey() + "\",\"riskClass\":\"" + risk.name() + "\"}");
       return null;
-    } catch (RuntimeException e) {
-      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-      repository.transitionTask(
-          tenantId,
-          userId,
-          task.id(),
-          TaskState.RUNNING.name(),
-          TaskState.FAILED.name(),
-          null,
-          message);
-      repository.transitionRun(
-          tenantId,
-          userId,
-          run.id(),
-          RunState.RUNNING.name(),
-          RunState.FAILED.name(),
-          null,
-          message);
-      audit.appendForTenant(
-          tenantId, userId, "AGENT_RUN_FAILED", "agent_run", run.id().toString(), "{}");
-      return requireRunRow(tenantId, userId, run.id());
     }
+    // The claim was lost while the tool ran (lease expired, another executor took over):
+    // discard our result silently. The current owner's outcome is the one that counts, and
+    // the tool carried the task's stable idempotency key, so a provider-side effect can be
+    // deduplicated or reconciled by key.
+    return requireRunRow(tenantId, userId, run.id());
   }
 
   /** Records a human decision; an approval resumes the run. Returns the run afterwards. */

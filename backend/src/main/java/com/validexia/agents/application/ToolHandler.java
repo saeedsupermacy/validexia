@@ -7,6 +7,24 @@ import com.validexia.agents.domain.RiskClass;
  * never by agents: the registry is the permission boundary, and a tool's {@link RiskClass} is fixed
  * at registration time. Inputs and outputs are JSON strings, matching how the persistence layer
  * stores them (jsonb columns carried as text).
+ *
+ * <p><b>Execution semantics — read this before writing a tool with side effects.</b> The engine is
+ * at-least-once: a task's tool may be invoked more than once (executor crash, lease expiry and
+ * takeover). Database leases and fencing stop a stale executor from committing <i>state</i>, but
+ * they cannot retract a provider request already in flight, so they do not give exactly-once
+ * external execution. Therefore:
+ *
+ * <ul>
+ *   <li>Every invocation carries a stable {@link ToolInvocation#idempotencyKey()} derived from the
+ *       run/task identity — identical across retries and executors. Pass it to the provider's
+ *       idempotency mechanism wherever supported, or deduplicate against it equivalently. An
+ *       external write tool with neither provider idempotency nor an equivalent verified
+ *       dedupe/reconciliation mechanism must not be registered.
+ *   <li>If a provider call's outcome is <b>ambiguous</b> (a timeout or dropped connection after the
+ *       request may have been accepted), reconcile with the provider — query what the idempotency
+ *       key actually did — before any retry. Never blindly repeat an operation whose outcome is
+ *       unknown.
+ * </ul>
  */
 public interface ToolHandler {
 
@@ -14,6 +32,15 @@ public interface ToolHandler {
 
   RiskClass riskClass();
 
-  /** Executes the tool. Implementations must be safe to call again with the same input. */
+  /**
+   * Executes the tool with its invocation context. Implementations that perform external writes
+   * must honour the idempotency contract described on this interface. The default delegates to
+   * {@link #execute(String)} for tools that do not need the context.
+   */
+  default String execute(ToolInvocation invocation, String inputJson) {
+    return execute(inputJson);
+  }
+
+  /** Executes the tool. May be called again for the same task; see the contract above. */
   String execute(String inputJson);
 }

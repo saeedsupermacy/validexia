@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -55,7 +56,11 @@ public class AgentsRepository {
       String inputJson,
       @Nullable String outputJson,
       @Nullable String error,
-      int attempts) {}
+      int attempts,
+      String idempotencyKey) {}
+
+  /** Outcome of a lease claim attempt on a task (V7). */
+  public record ClaimOutcome(boolean claimed, int attempt, String taskState) {}
 
   public record AgentApprovalRow(
       UUID id,
@@ -241,8 +246,8 @@ public class AgentsRepository {
         userId,
         () ->
             jdbc.query(
-                "SELECT id, seq, tool_key, risk_class, state, input, output, error, attempts"
-                    + " FROM public.list_agent_tasks(?, ?)",
+                "SELECT id, seq, tool_key, risk_class, state, input, output, error, attempts,"
+                    + " idempotency_key FROM public.list_agent_tasks(?, ?)",
                 (rs, rowNum) ->
                     new AgentTaskRow(
                         rs.getObject("id", UUID.class),
@@ -253,16 +258,46 @@ public class AgentsRepository {
                         rs.getString("input"),
                         rs.getString("output"),
                         rs.getString("error"),
-                        rs.getInt("attempts")),
+                        rs.getInt("attempts"),
+                        rs.getString("idempotency_key")),
                 tenantId,
                 runId));
   }
 
-  public boolean transitionTask(
+  /**
+   * Claims a task under a lease (V7). Succeeds from PENDING, or from RUNNING once the previous
+   * executor's lease has expired. On success the outcome carries the fencing attempt number the
+   * caller must present to {@link #completeTask} / {@link #parkTaskForApproval}.
+   */
+  public ClaimOutcome claimTask(
+      UUID tenantId, UUID userId, UUID runId, UUID taskId, String executorId, int leaseSeconds) {
+    return inTenant(
+        tenantId,
+        userId,
+        () ->
+            jdbc.queryForObject(
+                "SELECT claimed, attempt, task_state FROM public.claim_agent_task(?, ?, ?, ?, ?)",
+                (rs, rowNum) ->
+                    new ClaimOutcome(
+                        rs.getBoolean("claimed"), rs.getInt("attempt"), rs.getString("task_state")),
+                tenantId,
+                runId,
+                taskId,
+                executorId,
+                leaseSeconds));
+  }
+
+  /**
+   * Fenced completion: only the executor holding the claim (matching executor id and attempt) can
+   * move the task to SUCCEEDED or FAILED. Returns false when the claim was lost — the caller must
+   * then discard its result and stay silent (no audit event).
+   */
+  public boolean completeTask(
       UUID tenantId,
       UUID userId,
       UUID taskId,
-      String expected,
+      String executorId,
+      int attempt,
       String target,
       @Nullable String outputJson,
       @Nullable String error) {
@@ -272,12 +307,13 @@ public class AgentsRepository {
         () ->
             Boolean.TRUE.equals(
                 jdbc.queryForObject(
-                    "SELECT public.transition_agent_task(?, ?, ?, ?, CAST(? AS jsonb), ?)",
-                    new Object[] {tenantId, taskId, expected, target, outputJson, error},
+                    "SELECT public.complete_agent_task(?, ?, ?, ?, ?, CAST(? AS jsonb), ?)",
+                    new Object[] {tenantId, taskId, executorId, attempt, target, outputJson, error},
                     new int[] {
                       Types.OTHER,
                       Types.OTHER,
                       Types.VARCHAR,
+                      Types.INTEGER,
                       Types.VARCHAR,
                       Types.OTHER,
                       Types.VARCHAR
@@ -285,17 +321,39 @@ public class AgentsRepository {
                     Boolean.class)));
   }
 
-  public UUID requestApproval(UUID tenantId, UUID userId, UUID taskId, String reason) {
-    return inTenant(
-        tenantId,
-        userId,
-        () ->
-            jdbc.queryForObject(
-                "SELECT public.request_agent_approval(?, ?, ?)",
-                UUID.class,
-                tenantId,
-                taskId,
-                reason));
+  /** Raised when an executor tries to park a task whose claim it no longer holds. */
+  public static final class ClaimLostException extends RuntimeException {
+    public ClaimLostException(UUID taskId) {
+      super("Task claim lost: " + taskId);
+    }
+  }
+
+  /**
+   * Parks a claimed task for human approval and creates its approval row atomically. Throws {@link
+   * ClaimLostException} if the claim was lost, so a racing executor can never create a duplicate
+   * approval or surface a spurious failure.
+   */
+  public UUID parkTaskForApproval(
+      UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, String reason) {
+    try {
+      return inTenant(
+          tenantId,
+          userId,
+          () ->
+              jdbc.queryForObject(
+                  "SELECT public.park_agent_task_for_approval(?, ?, ?, ?, ?)",
+                  UUID.class,
+                  tenantId,
+                  taskId,
+                  executorId,
+                  attempt,
+                  reason));
+    } catch (DataAccessException e) {
+      if (e.getMessage() != null && e.getMessage().contains("task claim lost")) {
+        throw new ClaimLostException(taskId);
+      }
+      throw e;
+    }
   }
 
   public boolean decideApproval(
