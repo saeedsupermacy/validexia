@@ -41,7 +41,7 @@ public class AgentEngine {
   }
 
   /** Creates a run (idempotently when a key is given), persists its plan, and starts execution. */
-  public AgentRunRow createAndStart(
+  public AgentData.Run createAndStart(
       UUID tenantId,
       UUID userId,
       String agentKey,
@@ -78,12 +78,16 @@ public class AgentEngine {
           runId.toString(),
           "{\"agentKey\":\"" + agentKey + "\",\"mode\":\"" + mode.name() + "\"}");
     }
-    return execute(tenantId, userId, runId);
+    return AgentData.Run.from(executeRow(tenantId, userId, runId));
   }
 
   /** Continues a run from its persisted state. Safe to call repeatedly. */
-  public AgentRunRow execute(UUID tenantId, UUID userId, UUID runId) {
-    AgentRunRow run = requireRun(tenantId, userId, runId);
+  public AgentData.Run execute(UUID tenantId, UUID userId, UUID runId) {
+    return AgentData.Run.from(executeRow(tenantId, userId, runId));
+  }
+
+  private AgentRunRow executeRow(UUID tenantId, UUID userId, UUID runId) {
+    AgentRunRow run = requireRunRow(tenantId, userId, runId);
     RunState state = RunState.valueOf(run.state());
     if (state == RunState.SUCCEEDED || state == RunState.FAILED || state == RunState.CANCELLED) {
       return run;
@@ -91,7 +95,7 @@ public class AgentEngine {
     if (state == RunState.PENDING) {
       if (!repository.transitionRun(
           tenantId, userId, runId, RunState.PENDING.name(), RunState.RUNNING.name(), null, null)) {
-        return requireRun(tenantId, userId, runId);
+        return requireRunRow(tenantId, userId, runId);
       }
     } else if (state == RunState.WAITING_APPROVAL) {
       boolean stillWaiting =
@@ -108,7 +112,7 @@ public class AgentEngine {
           RunState.RUNNING.name(),
           null,
           null)) {
-        return requireRun(tenantId, userId, runId);
+        return requireRunRow(tenantId, userId, runId);
       }
     }
 
@@ -131,7 +135,7 @@ public class AgentEngine {
               task.error() == null ? "A task failed" : task.error());
           audit.appendForTenant(
               tenantId, userId, "AGENT_RUN_FAILED", "agent_run", runId.toString(), "{}");
-          return requireRun(tenantId, userId, runId);
+          return requireRunRow(tenantId, userId, runId);
         }
         case WAITING_APPROVAL -> {
           repository.transitionRun(
@@ -142,7 +146,7 @@ public class AgentEngine {
               RunState.WAITING_APPROVAL.name(),
               null,
               null);
-          return requireRun(tenantId, userId, runId);
+          return requireRunRow(tenantId, userId, runId);
         }
         case RUNNING -> {
           // A previous executor died mid-task. Requeue it and execute it as PENDING.
@@ -169,7 +173,7 @@ public class AgentEngine {
         }
       }
       if (Thread.currentThread().isInterrupted()) {
-        return requireRun(tenantId, userId, runId);
+        return requireRunRow(tenantId, userId, runId);
       }
     }
 
@@ -188,7 +192,7 @@ public class AgentEngine {
         null);
     audit.appendForTenant(
         tenantId, userId, "AGENT_RUN_SUCCEEDED", "agent_run", runId.toString(), "{}");
-    return requireRun(tenantId, userId, runId);
+    return requireRunRow(tenantId, userId, runId);
   }
 
   /**
@@ -226,7 +230,7 @@ public class AgentEngine {
           RunState.WAITING_APPROVAL.name(),
           null,
           null);
-      return requireRun(tenantId, userId, run.id());
+      return requireRunRow(tenantId, userId, run.id());
     }
     if (!repository.transitionTask(
         tenantId,
@@ -277,12 +281,12 @@ public class AgentEngine {
           message);
       audit.appendForTenant(
           tenantId, userId, "AGENT_RUN_FAILED", "agent_run", run.id().toString(), "{}");
-      return requireRun(tenantId, userId, run.id());
+      return requireRunRow(tenantId, userId, run.id());
     }
   }
 
   /** Records a human decision; an approval resumes the run. Returns the run afterwards. */
-  public AgentRunRow decideApproval(
+  public AgentData.Run decideApproval(
       UUID tenantId,
       UUID deciderUserId,
       UUID approvalId,
@@ -305,13 +309,18 @@ public class AgentEngine {
         "agent_approval",
         approvalId.toString(),
         "{\"decision\":\"" + decision + "\"}");
-    AgentRunRow run = requireRun(tenantId, deciderUserId, approval.runId());
+    AgentRunRow run = requireRunRow(tenantId, deciderUserId, approval.runId());
     // Either way the run leaves WAITING_APPROVAL: an approval lets execution continue; a
     // rejection makes execute() observe the FAILED task and fail the run with its reason.
-    return execute(tenantId, run.initiatedBy(), approval.runId());
+    return AgentData.Run.from(executeRow(tenantId, run.initiatedBy(), approval.runId()));
   }
 
-  public AgentRunRow requireRun(UUID tenantId, UUID userId, UUID runId) {
+  /** Loads a run for the API layer, or throws if it is not visible to this tenant. */
+  public AgentData.Run requireRun(UUID tenantId, UUID userId, UUID runId) {
+    return AgentData.Run.from(requireRunRow(tenantId, userId, runId));
+  }
+
+  private AgentRunRow requireRunRow(UUID tenantId, UUID userId, UUID runId) {
     return repository
         .getRun(tenantId, userId, runId)
         .orElseThrow(() -> new IllegalArgumentException("Agent run not found: " + runId));

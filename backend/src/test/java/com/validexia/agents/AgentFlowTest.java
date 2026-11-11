@@ -66,8 +66,9 @@ class AgentFlowTest {
   }
 
   private String token(String subject) throws Exception {
+    // 60 seconds: the verifier enforces its own exp-iat ceiling, like SessionFlowTest.
     return TestTokens.mint(
-        TestClerkConfig.key(), Instant.now(), 300, Map.of("sub", subject, "sid", "s-" + subject));
+        TestClerkConfig.key(), Instant.now(), 60, Map.of("sub", subject, "sid", "s-" + subject));
   }
 
   /** Creates a tenant and a provisioned admin member; returns the tenant id. */

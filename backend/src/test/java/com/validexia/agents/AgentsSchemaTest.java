@@ -68,7 +68,8 @@ class AgentsSchemaTest {
             new org.springframework.jdbc.datasource.SingleConnectionDataSource(
                 TestDatabase.appDataSource().getConnection(), true));
     try {
-      session.update("SELECT set_config('app.tenant_id', ?, false)", tenantA.toString());
+      session.queryForObject(
+          "SELECT set_config('app.tenant_id', ?, false)", String.class, tenantA.toString());
       UUID definitionId =
           session.queryForObject(
               "SELECT public.register_agent_definition(?, 'foundation.echo', 'Echo', '',"

@@ -1,13 +1,10 @@
 package com.validexia.agents.api;
 
+import com.validexia.agents.application.AgentData;
 import com.validexia.agents.application.AgentEngine;
+import com.validexia.agents.application.AgentQueries;
 import com.validexia.agents.application.ToolRegistry;
 import com.validexia.agents.domain.RunMode;
-import com.validexia.agents.infrastructure.AgentsRepository;
-import com.validexia.agents.infrastructure.AgentsRepository.AgentApprovalRow;
-import com.validexia.agents.infrastructure.AgentsRepository.AgentDefinitionRow;
-import com.validexia.agents.infrastructure.AgentsRepository.AgentRunRow;
-import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
 import com.validexia.platform.errors.ApiException;
 import com.validexia.platform.security.RequestContext;
 import java.util.List;
@@ -79,12 +76,12 @@ public class AgentController {
 
   public record DecisionRequest(String decision, @Nullable String reason) {}
 
-  private final AgentsRepository repository;
+  private final AgentQueries queries;
   private final AgentEngine engine;
   private final ToolRegistry tools;
 
-  public AgentController(AgentsRepository repository, AgentEngine engine, ToolRegistry tools) {
-    this.repository = repository;
+  public AgentController(AgentQueries queries, AgentEngine engine, ToolRegistry tools) {
+    this.queries = queries;
     this.engine = engine;
     this.tools = tools;
   }
@@ -97,7 +94,7 @@ public class AgentController {
       throw ApiException.validation("agentKey, name and kind are required");
     }
     UUID id =
-        repository.registerDefinition(
+        queries.registerDefinition(
             tenantId,
             context.userId(),
             request.agentKey(),
@@ -105,7 +102,7 @@ public class AgentController {
             request.description() == null ? "" : request.description(),
             request.kind(),
             request.config() == null ? "{}" : request.config());
-    return repository.listDefinitions(tenantId, context.userId()).stream()
+    return queries.listDefinitions(tenantId, context.userId()).stream()
         .filter(d -> d.id().equals(id))
         .findFirst()
         .map(AgentController::toView)
@@ -116,7 +113,7 @@ public class AgentController {
   public List<DefinitionView> definitions() {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    return repository.listDefinitions(tenantId, context.userId()).stream()
+    return queries.listDefinitions(tenantId, context.userId()).stream()
         .map(AgentController::toView)
         .toList();
   }
@@ -140,7 +137,7 @@ public class AgentController {
     } catch (IllegalArgumentException e) {
       throw ApiException.validation("mode must be ASSIST, APPROVAL or AUTONOMOUS");
     }
-    AgentRunRow run;
+    AgentData.Run run;
     try {
       run =
           engine.createAndStart(
@@ -174,7 +171,7 @@ public class AgentController {
   public List<RunView> runs() {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    return repository.listRuns(tenantId, context.userId()).stream()
+    return queries.listRuns(tenantId, context.userId()).stream()
         .map(r -> toView(tenantId, context.userId(), r))
         .toList();
   }
@@ -195,7 +192,7 @@ public class AgentController {
   public List<ApprovalView> approvals() {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    return repository.listApprovals(tenantId, context.userId(), "PENDING").stream()
+    return queries.listApprovals(tenantId, context.userId(), "PENDING").stream()
         .map(AgentController::toView)
         .toList();
   }
@@ -208,7 +205,7 @@ public class AgentController {
       throw ApiException.validation("decision must be APPROVED or REJECTED");
     }
     try {
-      AgentRunRow run =
+      AgentData.Run run =
           engine.decideApproval(
               tenantId, context.userId(), approvalId, request.decision(), request.reason());
       return toView(tenantId, context.userId(), run);
@@ -220,9 +217,9 @@ public class AgentController {
     }
   }
 
-  private RunView toView(UUID tenantId, UUID userId, AgentRunRow run) {
+  private RunView toView(UUID tenantId, UUID userId, AgentData.Run run) {
     List<TaskView> tasks =
-        repository.listTasks(tenantId, userId, run.id()).stream()
+        queries.listTasks(tenantId, userId, run.id()).stream()
             .map(AgentController::toView)
             .toList();
     return new RunView(
@@ -236,26 +233,36 @@ public class AgentController {
         tasks);
   }
 
-  private static DefinitionView toView(AgentDefinitionRow row) {
+  private static DefinitionView toView(AgentData.Definition definition) {
     return new DefinitionView(
-        row.id(), row.agentKey(), row.name(), row.description(), row.kind(), row.status());
+        definition.id(),
+        definition.agentKey(),
+        definition.name(),
+        definition.description(),
+        definition.kind(),
+        definition.status());
   }
 
-  private static TaskView toView(AgentTaskRow row) {
+  private static TaskView toView(AgentData.Task task) {
     return new TaskView(
-        row.id(),
-        row.seq(),
-        row.toolKey(),
-        row.riskClass(),
-        row.state(),
-        row.outputJson(),
-        row.error(),
-        row.attempts());
+        task.id(),
+        task.seq(),
+        task.toolKey(),
+        task.riskClass(),
+        task.state(),
+        task.outputJson(),
+        task.error(),
+        task.attempts());
   }
 
-  private static ApprovalView toView(AgentApprovalRow row) {
+  private static ApprovalView toView(AgentData.Approval approval) {
     return new ApprovalView(
-        row.id(), row.runId(), row.taskId(), row.state(), row.reason(), row.decisionReason());
+        approval.id(),
+        approval.runId(),
+        approval.taskId(),
+        approval.state(),
+        approval.reason(),
+        approval.decisionReason());
   }
 
   private static UUID requireTenant(RequestContext.Context context) {
