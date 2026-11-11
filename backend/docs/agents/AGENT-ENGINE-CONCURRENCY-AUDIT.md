@@ -169,3 +169,51 @@ Items 1–3 make executor behaviour safe inside the database; item 4 is what
 makes retries safe at the provider boundary, and exactly-once external
 execution cannot be guaranteed merely through database leases. Read-only and
 in-memory tools are safe under the current engine.
+
+## Resolution — implemented (branch `feat/agent-engine-concurrency-safety`)
+
+Status per finding, implemented after this audit was merged:
+
+1. **Task leases with fencing (V7).** `agent_tasks` gains `claimed_by` and
+   `claim_expires_at`. `claim_agent_task` claims from PENDING, or from RUNNING
+   only once the lease has expired; claiming increments `attempts`, which is
+   the fencing token. `complete_agent_task` and `park_agent_task_for_approval`
+   require the caller's (executor, attempt) pair to still match — a stale
+   executor's completion matches zero rows, and the engine discards its result
+   without writing audit.
+2. **Claim before gate.** The engine claims first, then parks under the claim:
+   `park_agent_task_for_approval` moves the task to WAITING_APPROVAL and
+   inserts the approval row atomically, fenced by the claim. Losing the claim
+   between claim and park is absorbed quietly — no 500, no duplicate approval
+   (`UNIQUE(task_id)` remains as backstop).
+3. **Single-executor semantics.** A RUNNING run may be entered, but every task
+   touch goes through the lease claim, so concurrent executors divide the work;
+   an executor that finds a live claim held by someone else stops and reports
+   the run as it stands.
+4. **Every CAS honoured.** `AGENT_TASK_EXECUTED`, `AGENT_RUN_SUCCEEDED`, and
+   `AGENT_RUN_FAILED` are appended only when the corresponding transition
+   actually won.
+5. **Stable idempotency keys.** `ToolInvocation` carries `runId`, `taskId`, the
+   task's stored idempotency key (`runId:seq`, assigned once when the plan is
+   persisted — identical across retries, requeues, and executors), and the
+   fencing attempt (never part of the key). The `ToolHandler` contract
+   documents at-least-once semantics, the provider-idempotency duty, and
+   reconcile-don't-retry for ambiguous outcomes.
+6. **Convergent creation.** `create_agent_run` catches the idempotency
+   unique-violation and returns the winning run with `was_created = false`, so
+   concurrent creators converge instead of erroring.
+
+Covered by `AgentConcurrencyTest` (latch-driven, no sleeps): concurrent
+executors share work without duplicating it; a lease-expiry takeover fences
+the stale executor (its output never commits; audit stays singular); the
+approval race parks exactly once with no errors; eight concurrent creators
+with one key converge on one run with one `AGENT_RUN_CREATED` event; and a
+simulated ambiguous provider outcome is deduplicated by the stable key on
+takeover (two invocations, one effect).
+
+**Known remaining limits.** There is no lease heartbeat: a tool running
+longer than the 30-second lease can be taken over mid-flight. Fencing
+prevents the stale owner from committing database state, and the stable
+idempotency key is the provider-side defence, per the gate above — which
+still stands for real tools. Background (out-of-request) execution remains a
+separate future increment.
