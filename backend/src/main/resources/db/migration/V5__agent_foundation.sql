@@ -128,7 +128,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_id uuid;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
@@ -172,7 +173,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_agent_id uuid; v_run_id uuid;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
@@ -245,7 +247,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_rows int;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
@@ -271,7 +274,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_id uuid;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
@@ -316,7 +320,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_rows int;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
@@ -342,7 +347,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_run_id uuid; v_approval_id uuid; v_rows int;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
@@ -375,7 +381,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE v_task_id uuid; v_rows int;
 BEGIN
-    IF pg_catalog.current_setting('app.tenant_id', true) NOT IN ('', NULL)
+    IF pg_catalog.current_setting('app.tenant_id', true) IS NOT NULL
+       AND pg_catalog.current_setting('app.tenant_id', true) <> ''
        AND pg_catalog.current_setting('app.tenant_id', true) <> p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;

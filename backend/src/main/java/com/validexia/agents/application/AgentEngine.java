@@ -12,7 +12,9 @@ import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
 import com.validexia.agents.infrastructure.AgentsRepository.CreateRunResult;
 import com.validexia.audit.AuditService;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 
@@ -117,6 +119,13 @@ public class AgentEngine {
     }
 
     RunMode mode = RunMode.valueOf(run.mode());
+    // A task a human already approved must not be parked again: the approval IS the gate
+    // decision for that task. (Approvals are unique per task, and a decided approval cannot
+    // be re-requested — re-parking would also violate that uniqueness.)
+    Set<UUID> approvedTaskIds =
+        repository.listApprovals(tenantId, userId, "APPROVED").stream()
+            .map(AgentApprovalRow::taskId)
+            .collect(Collectors.toSet());
     List<AgentTaskRow> tasks = repository.listTasks(tenantId, userId, runId);
     for (AgentTaskRow task : tasks) {
       TaskState taskState = TaskState.valueOf(task.state());
@@ -160,13 +169,18 @@ public class AgentEngine {
               null);
           AgentRunRow outcome =
               executeTask(
-                  tenantId, userId, run, mode, reloadTask(tenantId, userId, runId, task.id()));
+                  tenantId,
+                  userId,
+                  run,
+                  mode,
+                  reloadTask(tenantId, userId, runId, task.id()),
+                  approvedTaskIds);
           if (outcome != null) {
             return outcome;
           }
         }
         case PENDING -> {
-          AgentRunRow outcome = executeTask(tenantId, userId, run, mode, task);
+          AgentRunRow outcome = executeTask(tenantId, userId, run, mode, task, approvedTaskIds);
           if (outcome != null) {
             return outcome;
           }
@@ -200,9 +214,14 @@ public class AgentEngine {
    * the RUNNING state (waiting or failed), or {@code null} to continue with the next task.
    */
   private @Nullable AgentRunRow executeTask(
-      UUID tenantId, UUID userId, AgentRunRow run, RunMode mode, AgentTaskRow task) {
+      UUID tenantId,
+      UUID userId,
+      AgentRunRow run,
+      RunMode mode,
+      AgentTaskRow task,
+      Set<UUID> approvedTaskIds) {
     RiskClass risk = RiskClass.valueOf(task.riskClass());
-    if (ModeGate.requiresApproval(mode, risk)) {
+    if (!approvedTaskIds.contains(task.id()) && ModeGate.requiresApproval(mode, risk)) {
       UUID approvalId =
           repository.requestApproval(
               tenantId,
