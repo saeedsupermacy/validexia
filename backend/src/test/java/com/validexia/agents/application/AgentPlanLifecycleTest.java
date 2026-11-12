@@ -1466,15 +1466,18 @@ class AgentPlanLifecycleTest {
   }
 
   /**
-   * Finding 11 regression (migration V10): a renewal whose transaction STARTED while the claim was
-   * live, but whose UPDATE only executes after the lease expired in wall-clock time (blocked on the
-   * task row's lock), must NOT renew. Under V9 the check used {@code now()} — the transaction-start
-   * timestamp — so the stale check passed and the expired claim was resurrected. V10 evaluates with
-   * {@code clock_timestamp()}: the renewal returns false, and a takeover by another executor proves
-   * the claim was genuinely dead. All timing is gated on the database clock (polls of the claim
-   * row), never on JVM sleeps: the renewal is started only when the database says ~1.2s of lease
-   * remain (its transaction provably begins before expiry, and its 2s statement timeout cannot fire
-   * before the release), and the lock is released only once the database says the claim has
+   * Finding 11 regression (migrations V10–V11): a renewal that reaches the task row while its claim
+   * is live, but whose update only lands after the lease expired in wall-clock time (blocked on the
+   * task row's lock), must NOT renew. Two stale-evaluation layers are pinned here: V9's check used
+   * {@code now()} (the transaction-start timestamp), and even V10's {@code clock_timestamp()}
+   * predicate was evaluated before the lock wait, so an aborting blocker left the early evaluation
+   * in force. V11 locks the row first (SELECT ... FOR UPDATE) and evaluates the fence and expiry in
+   * procedural code while holding the lock: the renewal returns false, and a takeover by another
+   * executor proves the claim was genuinely dead. (This test failed against V10 in CI — that
+   * failure is how the second layer was found.) All timing is gated on the database clock (polls of
+   * the claim row), never on JVM sleeps: the renewal is started only when the database says ~1.2s
+   * of lease remain (it provably reaches the row before expiry, and its 2s statement timeout cannot
+   * fire before the release), and the lock is released only once the database says the claim has
    * expired.
    */
   @Test

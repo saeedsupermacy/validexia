@@ -509,22 +509,39 @@ as stated above). Past that point the Finding 7 residual applies
 unchanged: state writes stay fenced, concurrent invocation in the window
 cannot be excluded in-JVM, and the provider-idempotency gate stands.
 
-**The `now()` question — answered, and fixed.** PostgreSQL `now()` is
-`transaction_timestamp()`: fixed at transaction start, it does not advance
-inside a transaction. V9's renewal therefore had a stale-timestamp hole:
-a renewal whose transaction began while the claim was live, but whose
-UPDATE only executed after the lease had expired in wall-clock time (e.g.
-blocked on the task row's lock), passed `claim_expires_at > now()` against
-the stale start time and resurrected the expired claim, stamping the new
-expiry from the same stale base. The (claimed_by, attempts) fence blunted
-the worst case — a takeover in between moves the fence, so the stale
-renewal matched zero rows — but the check itself was wrong. **Migration
-V10** recreates the renewal function with `clock_timestamp()` (the real
-wall clock, advancing within a transaction) for both the liveness check
-and the new expiry. The claim function (V7) also uses `now()`; inspected:
-there a stale start time only ever shortens a new lease or refuses a
-takeover that wall-clock time would have allowed — the conservative
-direction — so it is deliberately left unchanged.
+**The `now()` question — answered, and fixed in two layers.**
+PostgreSQL `now()` is `transaction_timestamp()`: fixed at transaction
+start, it does not advance inside a transaction. V9's renewal therefore
+had a stale-timestamp hole: a renewal whose transaction began while the
+claim was live, but whose UPDATE only executed after the lease had
+expired in wall-clock time (e.g. blocked on the task row's lock), passed
+`claim_expires_at > now()` against the stale start time and resurrected
+the expired claim, stamping the new expiry from the same stale base. The
+(claimed_by, attempts) fence blunted the worst case — a takeover in
+between moves the fence, so the stale renewal matched zero rows — but the
+check itself was wrong. **Migration V10** switched the function to
+`clock_timestamp()` (the real wall clock, advancing within a transaction).
+
+**Correction, found by the regression test failing in CI:** V10 was
+necessary but NOT sufficient. In READ COMMITTED, an UPDATE's WHERE
+predicates are evaluated when the row is first examined — *before* the
+statement waits on the row's lock. If the locking transaction then aborts,
+the blocked update proceeds against the original row version on the
+strength of that early evaluation (re-evaluation only happens when the
+concurrent transaction committed a newer version). Time-based predicates
+are the exposed case: time passing during the wait changes no data, so
+nothing triggers a fresh evaluation — `clock_timestamp()` in the
+predicate was still read before the wait. **Migration V11** therefore
+restructures the function as lock-then-check: `SELECT ... FOR UPDATE`
+takes the row lock (returning the newest committed version), and the
+fence and expiry checks are evaluated in PL/pgSQL afterwards, with
+`clock_timestamp()`, while the lock is held — no clock reading or row
+state can move between the check and the update. The claim function (V7)
+also uses `now()`; inspected: there a stale or early evaluation runs in
+the safe direction — time passing during its waits only makes an expired
+claim more expired, an aborting blocker leaves exactly the state that was
+evaluated, and a committing blocker forces predicate re-evaluation
+against the new version — so it is deliberately left unchanged.
 
 Covered by tests: a heartbeat-level timing test proving the retry starts
 ~1s after a maximum-duration failure rather than a full interval later
@@ -532,8 +549,11 @@ Covered by tests: a heartbeat-level timing test proving the retry starts
 ~6s); five consecutive transient failures retried promptly with no
 claim-loss declaration, the sixth attempt succeeding; a no-overlap test
 pinning strictly serialized attempts per claim; and a database regression
-test for V10 that starts a renewal while its claim is live, blocks its
-UPDATE on the task row's lock past the wall-clock expiry, then releases
-the lock — the renewal must return false (under V9 it returned true), and
-a takeover claim by another executor then succeeds, proving the claim was
-genuinely dead. All previously existing tests are retained.
+test, gated on database-clock polls rather than sleeps, that starts a
+renewal while its claim is live, blocks it on the task row's lock past
+the wall-clock expiry, then releases the lock — the renewal must return
+false, and a takeover claim by another executor then succeeds, proving
+the claim was genuinely dead. That regression test returned true (failed)
+against both V9 and the first fix, V10, in CI — which is how the
+lock-then-check layer (V11) was found — and passes against V11. All
+previously existing tests are retained.
