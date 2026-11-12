@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.validexia.agents.domain.RiskClass;
 import com.validexia.agents.domain.RunMode;
 import com.validexia.agents.infrastructure.AgentsRepository;
+import com.validexia.agents.infrastructure.AgentsRepository.AgentRunRow;
 import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
 import com.validexia.agents.infrastructure.AgentsRepository.ClaimOutcome;
 import com.validexia.agents.infrastructure.AgentsRepository.PlanTask;
@@ -836,11 +837,19 @@ class AgentPlanLifecycleTest {
 
     tool.release.countDown();
     assertTrue(done.await(15, TimeUnit.SECONDS));
-    assertEquals("SUCCEEDED", result.get().state());
+    // The invocation's real outcome was recorded exactly once. The run itself is still RUNNING:
+    // restoring the caller's interrupt status makes the engine stop its walk after the current
+    // task (its designed response to an interrupt) — a later execute() settles the run.
+    assertEquals("RUNNING", result.get().state());
     assertTrue(restored.get(), "the caller's interrupt status is restored after the invocation");
     assertEquals(1, tool.entries.get());
     UUID taskId = repository.listTasks(tenantId, userId, runId).get(0).id();
+    assertEquals("SUCCEEDED", repository.listTasks(tenantId, userId, runId).get(0).state());
     assertEquals(1, auditCount(tenantId, "AGENT_TASK_EXECUTED", taskId));
+    AgentData.Run settled = engine.execute(tenantId, userId, runId);
+    assertEquals("SUCCEEDED", settled.state());
+    assertEquals(1, auditCount(tenantId, "AGENT_RUN_SUCCEEDED", runId));
+    assertEquals(1, tool.entries.get());
   }
 
   /** An engine with one tool thread: the first run occupies it, the second invocation queues. */
@@ -875,12 +884,19 @@ class AgentPlanLifecycleTest {
     throw new AssertionError("task of run " + runId + " never became RUNNING");
   }
 
-  private UUID runIdOf(UUID tenantId, UUID userId, String agentKey) {
-    return repository.listRuns(tenantId, userId).stream()
-        .filter(run -> agentKey.equals(run.agentKey()))
-        .findFirst()
-        .orElseThrow(() -> new AssertionError("no run for " + agentKey))
-        .id();
+  /** Polls until a run for the agent key exists (its creator thread commits it asynchronously). */
+  private UUID runIdOf(UUID tenantId, UUID userId, String agentKey) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+    while (System.nanoTime() < deadline) {
+      var runs = repository.listRuns(tenantId, userId);
+      for (AgentRunRow run : runs) {
+        if (agentKey.equals(run.agentKey())) {
+          return run.id();
+        }
+      }
+      Thread.sleep(50);
+    }
+    throw new AssertionError("no run for " + agentKey);
   }
 
   /**
