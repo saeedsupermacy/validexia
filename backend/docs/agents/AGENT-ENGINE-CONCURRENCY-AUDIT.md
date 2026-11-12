@@ -267,3 +267,67 @@ within its lease.
 stable keys are necessary but not sufficient — a provider's actual
 idempotency semantics and retention window must be verified before any
 external integration is enabled.
+
+---
+
+## Follow-up finding (PR #3 review, 2026-11-12) — Finding 7, RESOLVED by migration V9
+
+**Finding 7 — `Future.cancel(true)` is not a termination mechanism.** The V8
+timeout strategy requested interruption at 20s and immediately recorded the
+task FAILED and released its claim. A tool ignoring interruption kept
+running; at lease expiry (30s) a takeover could invoke the same operation a
+second time, concurrently — and the unbounded cached thread pool could
+accumulate such zombie threads indefinitely. Cancelling the future also made
+the invocation's real outcome unobservable.
+
+**Resolution — the execution lifecycle, not a stronger cancel:**
+
+1. **Fenced heartbeat (V9).** While an invocation runs, its owner renews the
+   claim every lease/3 via `renew_agent_task_claim`, fenced on
+   (claimed_by, attempts) and only while the lease is still live (an expired
+   claim cannot be resurrected). A live invocation's lease therefore never
+   expires, so no takeover — and no second invocation — can occur while the
+   operation is actually running.
+2. **Outcomes only for ended invocations.** At the soft execution budget
+   (20s), or when the heartbeat reports the claim lost, the engine interrupts
+   the tool's own tracked thread directly and then waits until the invocation
+   has **actually ended** before recording anything. A tool ignoring
+   interruption keeps its task RUNNING under its heartbeat-held claim —
+   visible as still running — instead of being falsely FAILED-and-released.
+   If it never ends, the engine thread waits; that is the deliberate price of
+   never lying about termination.
+3. **Renewal failure semantics.** A renewal returning false means ownership
+   is proven lost: interruption is requested and the eventual completion is
+   fenced out by the existing CAS. A renewal *throwing* (database
+   unavailable) proves nothing: the heartbeat retries on schedule and never
+   declares loss on an error.
+4. **Bounded capacity.** The cached pool is replaced by a fixed pool
+   (4 threads, queue 16, abort on saturation). Saturation rejects a
+   submission *before* the invocation starts — the only immediate failure,
+   safe precisely because nothing ran. Zombie accumulation is thereby
+   bounded by the pool size, and each zombie holds a live claim, so zombies
+   cannot cause duplication.
+
+Covered by `AgentPlanLifecycleTest` additions: an interruption-ignoring
+tool is never invoked twice (heartbeat holds the claim past a full lease
+duration; a second executor observes RUNNING; the real outcome lands
+exactly once); renewal fencing (wrong executor/attempt rejected,
+no resurrection after expiry, stale owner locked out after takeover);
+heartbeat behaviour when the renewer throws (retries, no false loss) and
+when it returns false (loss signalled); saturation rejection without
+starting the invocation. The responsive-tool budget test is retained: a
+tool that honours interruption ends, and only then is its task failed.
+
+**Remaining limitations, stated plainly.**
+
+- A renewal-path outage longer than the lease (database down while a tool
+  runs) can still let a claim expire underneath a running invocation; a
+  takeover could then invoke concurrently. The stale owner's *state* writes
+  remain fenced out, but concurrent *invocation* in that window cannot be
+  excluded in-JVM. This is a further reason the provider-idempotency and
+  reconciliation gate stands for any external write tool.
+- Hard termination of uncooperative code requires process isolation
+  (a separate process/container per invocation that the OS can kill). That
+  is the identified route if hard timeouts ever become a requirement; it is
+  deliberately not claimed here.
+- The earlier "no lease heartbeat" limit is superseded by this section.
