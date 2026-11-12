@@ -1,1 +1,25 @@
+# Dependencies — install with `npm ci`; never commit.
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# TypeScript incremental build artifacts
 *.tsbuildinfo
+
+# Environment files — real values live only in untracked local files.
+# Templates (.env.example) stay committed.
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS and editor generated files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
