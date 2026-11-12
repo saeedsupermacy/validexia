@@ -392,3 +392,72 @@ interrupt-reaches-runner, a 100-round startup/interruption race hammer
 asserting exactly one of the two legal outcomes per round); a blocked
 heartbeat not stalling others on the production scheduler; and a renewal
 freed by its query timeout while its row is locked by another transaction.
+
+---
+
+## Follow-up finding (PR #3 review, 2026-11-12) — Finding 10, RESOLVED by lifecycle redesign + explicit pool bounds
+
+**Finding 10A — heartbeat capacity did not cover the maximum claims.** With
+claims taken at walk time, up to 20 claims could be live at once (4 running
+invocations + 16 queued), each owed a renewal every 10s, serviced by 4
+scheduler threads with a 10s statement timeout: a worst-case renewal batch
+needed ~50 thread-seconds per 10s window. The guarantee did not exist.
+
+**Resolution — shrink the claim population, not inflate the plane.** A
+supervisor stage now sits in front of the tool pool. Assignments queue
+UNCLAIMED; a supervisor thread claims a task only when it is about to invoke
+it, and then owns the heartbeat, the budget observation and the outcome
+recording for that invocation. Maximum simultaneous claims = tool threads
+(4). The capacity arithmetic is then: 4 claims × 1 renewal per 10s interval;
+4 parallel scheduler threads, so no renewal ever queues behind another
+claim's renewal; one renewal's worst case (below) is ~11s, and because a
+success extends the lease by a full 30s and scheduling is fixed-delay (no
+pile-up), even a worst-case renewal cadence of ~21s per claim stays inside
+the lease. Queued work costs no lease and no heartbeat, however long it
+waits. ModeGate parking is unchanged: the gate is evaluated first, and a
+task needing approval is claimed on the walk thread and parked under the
+fence, exactly as before. Saturation rejects at the assignment queue,
+claiming only to record the failure.
+
+**Finding 10B — statement timeout did not bound connection acquisition.**
+Inspection found NO Hikari configuration anywhere in the application: the
+effective `connection-timeout` was the default 30,000ms — the lease exactly —
+so a renewal could block for a whole lease before its statement started,
+and `setQueryTimeout` never applied. **Resolution:** `application.yaml` now
+pins `connection-timeout: 5000` and `maximum-pool-size: 10` with the
+reasoning recorded in place. A renewal's complete operation is therefore
+bounded: acquisition ≤ 5s + statement ≤ 5s (the repository caps its
+statement timeout at min(lease/3, 5s)) + commit — ~11s worst case, twice
+inside one 30s lease window at a 10s renewal interval. Renewals can hold at
+most 4 of the 10 pooled connections (one per live claim), leaving the
+majority for request and supervisor traffic.
+
+**Semantics preserved and proven.** A renewal blocked on acquisition fails
+as a transient error (at transaction begin it surfaces as
+`CannotCreateTransactionException` caused by `SQLTransientConnectionException`),
+which the heartbeat already treats as transient — never as claim loss; the
+claim's fence is untouched, and the same renewal succeeds once a connection
+is available. What happens if the outage exceeds the lease is unchanged and
+remains the documented residual: the claim can expire under a still-running
+invocation, the stale owner's state writes stay fenced out, concurrent
+invocation in that window cannot be excluded in-JVM, and the
+provider-idempotency gate stands.
+
+**Fallout fixed along the way.** Restoration of a caller's interrupt status
+now ends ALL interruptible infrastructure work on that thread: the walk's
+interrupt stop previously re-read the run row from the database, which a
+contended pool could refuse to a flagged thread (observed in CI as an
+intermittent failure after the outcome had been safely recorded). The walk
+returns the row already in hand, reloaded after its own transitions.
+
+Covered by tests: queued assignments hold no claim (task stays PENDING
+while queued; claimed fresh and executed exactly once when picked up);
+interruption while queued does not cancel the assignment; a stress test
+running the maximum 4 heartbeats at 600ms-per-renewal latency on the
+production scheduler, all cycling without loss; pool exhaustion held
+separately from row-lock contention (the only pooled connection held by the
+test; renewal acquisition fails at ~5s with the transient exception chain,
+then succeeds after release). The two Finding-9 queued tests were rewritten
+to these invariants — the scenario they guarded (a claim lost while queued)
+no longer exists by construction; ToolRun's cancel-before-start
+coordination is retained and still unit-tested for the running phase.
