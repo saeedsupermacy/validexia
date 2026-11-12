@@ -1446,13 +1446,36 @@ class AgentPlanLifecycleTest {
     }
   }
 
+  /** Seconds of lease remaining on the task's claim, by the DATABASE clock (admin poll). */
+  private double claimSecondsRemaining(UUID taskId) {
+    return admin
+        .queryForObject(
+            "SELECT extract(epoch from (claim_expires_at - clock_timestamp()))"
+                + " FROM public.agent_tasks WHERE id = ?",
+            Double.class,
+            taskId)
+        .doubleValue();
+  }
+
+  /** True once the task's claim has expired by the DATABASE clock (admin poll). */
+  private boolean claimExpiredByDatabaseClock(UUID taskId) {
+    return admin.queryForObject(
+        "SELECT claim_expires_at <= clock_timestamp() FROM public.agent_tasks WHERE id = ?",
+        Boolean.class,
+        taskId);
+  }
+
   /**
    * Finding 11 regression (migration V10): a renewal whose transaction STARTED while the claim was
    * live, but whose UPDATE only executes after the lease expired in wall-clock time (blocked on the
    * task row's lock), must NOT renew. Under V9 the check used {@code now()} — the transaction-start
    * timestamp — so the stale check passed and the expired claim was resurrected. V10 evaluates with
    * {@code clock_timestamp()}: the renewal returns false, and a takeover by another executor proves
-   * the claim was genuinely dead.
+   * the claim was genuinely dead. All timing is gated on the database clock (polls of the claim
+   * row), never on JVM sleeps: the renewal is started only when the database says ~1.2s of lease
+   * remain (its transaction provably begins before expiry, and its 2s statement timeout cannot fire
+   * before the release), and the lock is released only once the database says the claim has
+   * expired.
    */
   @Test
   void renewalCannotResurrectAClaimThatExpiredWhileItWasBlocked() throws Exception {
@@ -1473,7 +1496,7 @@ class AgentPlanLifecycleTest {
                 List.of(new PlanTask("test.count", "READ", "{}")))
             .runId();
     AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
-    // A 3-second lease: the claim expires ~3s from now.
+    // A 3-second lease: the claim expires 3s from now, by the database clock.
     ClaimOutcome claim = repository.claimTask(tenantId, userId, runId, task.id(), "exec-1", 3);
     assertTrue(claim.claimed());
 
@@ -1484,10 +1507,14 @@ class AgentPlanLifecycleTest {
         statement.execute(
             "UPDATE public.agent_tasks SET updated_at = now() WHERE id = '" + task.id() + "'");
       }
-      // Start the renewal ~2s in: its transaction begins while the claim is still live
-      // (expiry ≈ +3s), but its UPDATE blocks on the lock above. Its 2s statement timeout
-      // would fire at ≈ +4.1s.
-      Thread.sleep(2000);
+      // Start the renewal only when ~1.2s of lease remain: its transaction begins while the
+      // claim is still live (under V9 its now() would pass the check), and its UPDATE then
+      // blocks on the lock above.
+      long gateDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (claimSecondsRemaining(task.id()) > 1.2) {
+        assertTrue(System.nanoTime() < gateDeadline, "the lease-remaining gate never opened");
+        Thread.sleep(50);
+      }
       AtomicReference<Boolean> renewed = new AtomicReference<>();
       AtomicReference<Throwable> renewalError = new AtomicReference<>();
       Thread renewalThread =
@@ -1502,9 +1529,13 @@ class AgentPlanLifecycleTest {
                 }
               });
       renewalThread.start();
-      // Release the lock at ≈ +3.4s: after the wall-clock expiry (+3s), before the
-      // statement timeout (≈ +4.1s). The renewal now executes against an expired claim.
-      Thread.sleep(1400);
+      // Release the lock only once the database clock says the claim has expired. The
+      // renewal's total blocked time is ~1.3s — inside its 2s statement timeout.
+      gateDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (!claimExpiredByDatabaseClock(task.id())) {
+        assertTrue(System.nanoTime() < gateDeadline, "the claim never expired");
+        Thread.sleep(50);
+      }
       lock.rollback();
       renewalThread.join(TimeUnit.SECONDS.toMillis(15));
       assertFalse(renewalThread.isAlive(), "the blocked renewal completed");
