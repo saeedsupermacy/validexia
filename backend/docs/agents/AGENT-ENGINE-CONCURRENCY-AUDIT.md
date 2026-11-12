@@ -217,3 +217,53 @@ prevents the stale owner from committing database state, and the stable
 idempotency key is the provider-side defence, per the gate above — which
 still stands for real tools. Background (out-of-request) execution remains a
 separate future increment.
+
+---
+
+## Follow-up finding (PR #3 review, 2026-11-12) — RESOLVED by migration V8
+
+**Finding 6 — a duplicate creator could settle a run before its plan existed.**
+Creation was split across transactions: `create_agent_run` committed the run,
+then the engine persisted the plan task-by-task. A duplicate creator with the
+same idempotency key received the run with `was_created = false` and went
+straight to execution; arriving before the winner's first `addTask`, it saw an
+empty task list — which trivially satisfies "all settled" — and could mark
+the run SUCCEEDED. The winner then persisted tasks into a terminal run that
+never executed them.
+
+**Resolution (V8 + engine changes, same PR).** Plan initialization is now a
+lifecycle, not a sequence of calls:
+
+1. The engine computes the plan **before** persisting anything; a planner
+   failure leaves no run behind at all.
+2. `create_agent_run_with_plan` persists the run and its complete plan in a
+   **single transaction**, marking the run `plan_ready` in the same commit.
+   A duplicate caller can only ever observe a fully-initialized run, because
+   the plan is part of the commit that makes the run visible.
+3. `plan_ready` is explicit state, never inferred from task count: a
+   legitimately empty plan is ready with zero tasks, and `executeRow`
+   refuses to execute or settle a run that is not ready (reachable only via
+   the legacy split creation functions, which leave `plan_ready = false`).
+4. `claim_agent_task` validates its lease duration in the database
+   (1..3600 seconds).
+5. The 30-second lease question is answered with a **tool timeout, not
+   heartbeat**: tool invocations run under an enforced 20-second ceiling
+   (10-second margin below the lease). An overrunning tool is interrupted
+   and its task failed while the claim is still valid, so a timeout cannot
+   strand a task for mid-flight takeover. Tools that cannot finish within
+   the ceiling must not be registered until lease renewal exists; this is
+   documented on the `ToolHandler` contract.
+
+Covered by `AgentPlanLifecycleTest` (latch-driven): the review race replayed
+with creator A paused before persistence (no run visible; B completes the
+whole run; A converges; plan persisted exactly once; tool executed exactly
+once); an unready run is never executed or settled; a planner failure leaves
+no run and retries cleanly under the same key; a legitimately empty plan is
+plan-ready and succeeds; lease durations of 0 and 3601 are rejected while a
+valid claim still succeeds; and a hanging tool is interrupted and failed
+within its lease.
+
+**Gate status unchanged.** The external write-tool restriction stands:
+stable keys are necessary but not sufficient — a provider's actual
+idempotency semantics and retention window must be verified before any
+external integration is enabled.
