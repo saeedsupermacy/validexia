@@ -362,19 +362,22 @@ public class AgentsRepository {
    * caller no longer owns the claim — a different executor holds it, the attempt moved on, or the
    * lease already expired (an expired claim cannot be resurrected).
    *
-   * <p>The statement carries a hard query timeout of one renewal interval (lease/3, at least one
-   * second, at most five): a renewal that hangs — a locked row, a stalled database — fails bounded
-   * as a transient error instead of occupying its heartbeat thread and connection indefinitely, and
-   * the heartbeat retries on schedule. A hung database call is never silently treated as quick. The
-   * complete renewal operation is bounded end to end: connection acquisition is capped by the
-   * pool's {@code connection-timeout} (5s, set explicitly in application.yaml — Finding 10), the
-   * statement by this timeout, and with the lease at 30s and renewals every 10s a single renewal's
-   * worst case (~5s acquisition + ~5s statement + commit) still lands twice inside one lease
-   * window.
+   * <p>The statement carries a hard query timeout (lease/3, at least one second, at most two): a
+   * renewal that hangs — a locked row, a stalled database — fails bounded as a transient error
+   * instead of occupying its heartbeat thread and connection indefinitely, and the heartbeat
+   * retries promptly (Finding 11). A hung database call is never silently treated as quick. The
+   * renewal's enforceable bound is: connection acquisition ≤ 5s (the pool's {@code
+   * connection-timeout}, set explicitly in application.yaml — Finding 10) + statement ≤ 2s (this
+   * cap). The transaction commit that follows is NOT hard-bounded — no client-side timeout governs
+   * it; it is a single small round trip, fast in every observed environment, and any pathological
+   * commit stall belongs to the documented outage residual rather than to this bound. Against the
+   * production schedule (30s lease, renewals every 5s, retries 1s after a failure), the ~7s
+   * enforceable attempt bound means a claim survives two consecutive maximum-duration transient
+   * failures and is renewed by the third attempt before expiry.
    */
   public boolean renewTaskClaim(
       UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, int leaseSeconds) {
-    int queryTimeoutSeconds = Math.min(5, Math.max(1, leaseSeconds / 3));
+    int queryTimeoutSeconds = Math.max(1, Math.min(2, leaseSeconds / 3));
     return inTenant(
         tenantId,
         userId,

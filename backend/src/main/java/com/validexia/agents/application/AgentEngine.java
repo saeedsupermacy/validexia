@@ -169,10 +169,11 @@ public class AgentEngine {
    * blocked renewal must not delay renewals for every other active task (PR #3 review). Its size
    * matches the maximum number of simultaneous claims — one per tool thread, because supervisors
    * claim tasks only at the moment of execution (Finding 10) — so every live claim's renewal can be
-   * in flight at once, with none queueing behind another. Renewals are additionally bounded end to
-   * end (pool acquisition timeout in application.yaml; JDBC statement timeout in {@code
-   * AgentsRepository}), so a hung renewal occupies its heartbeat thread for at most ~10 seconds
-   * before failing as a transient error and retrying on schedule.
+   * in flight at once, with none queueing behind another. A renewal attempt's enforceable bound is
+   * its connection acquisition (pool timeout, application.yaml) plus its statement time (JDBC
+   * timeout in {@code AgentsRepository}) — about 7 seconds; the transaction commit that follows is
+   * a single small round trip with no hard client-side bound, and is accounted for honestly as such
+   * in the audit. Failed attempts retry after 1 second, not a full interval (Finding 11).
    */
   private static final int HEARTBEAT_THREADS = 4;
 
@@ -679,7 +680,7 @@ public class AgentEngine {
             () ->
                 repository.renewTaskClaim(
                     tenantId, userId, task.id(), executorId, attempt, leaseSeconds),
-            Math.max(1, leaseSeconds / 3))) {
+            Math.max(1, leaseSeconds / 6))) {
       Future<String> future;
       try {
         future = toolExecutor.submit(call);

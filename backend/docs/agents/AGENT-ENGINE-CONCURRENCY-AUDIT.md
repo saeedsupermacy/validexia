@@ -461,3 +461,79 @@ then succeeds after release). The two Finding-9 queued tests were rewritten
 to these invariants — the scenario they guarded (a claim lost while queued)
 no longer exists by construction; ToolRun's cancel-before-start
 coordination is retained and still unit-tested for the running phase.
+
+## Follow-up finding (PR #3 review, 2026-11-12) — Finding 11, RESOLVED by prompt-retry heartbeat + wall-clock renewal
+
+**Finding 11 — a single maximum-duration transient failure could consume
+the whole lease.** The Finding 10 arithmetic above is WRONG in a way this
+finding exposed, and it is superseded by this section: it costed the
+cadence of *successful* renewals (a "~21s worst-case cadence stays inside
+the lease", a renewal "~11s worst case, twice inside one lease window").
+A *failed* renewal extends nothing. The actual schedule was
+`scheduleWithFixedDelay` at a 10s interval, with an attempt able to run
+~10s (5s acquisition + 5s statement): success at t=0 (expiry t=30), attempt
+at t=10 failing at t≈20, next attempt — fixed-delay, a full interval after
+the failure *finished* — at t≈30, at or past expiry, where V9's function
+rightly refuses to renew. One bad renewal was enough to lose a live claim.
+
+**Resolution — retry timing, cadence, and a tighter attempt bound.**
+
+- The heartbeat no longer uses a fixed-delay periodic schedule. It is a
+  self-rescheduling chain of one-shot attempts: after a success the next
+  attempt is due after the success interval; after a transient failure it
+  is due after **1 second**, regardless of how long the failed attempt ran.
+  Because the next attempt is only scheduled once the previous one has
+  finished, attempts for one claim can never overlap.
+- The success cadence tightened from lease/3 to **lease/6** (5s against
+  the 30s production lease).
+- The renewal statement-timeout cap tightened from 5s to **2s**
+  (`min(lease/3, 2s)` in `AgentsRepository.renewTaskClaim`), so an
+  attempt's *enforceable* bound is acquisition ≤ 5s + statement ≤ 2s ≈
+  **7s**. The transaction commit after the statement is **not**
+  hard-bounded and is not claimed to be: no client-side timeout governs
+  it. It is a single small round trip, fast in every observed environment;
+  a pathological commit stall belongs to the outage residual below, not
+  to this bound.
+
+**The corrected guarantee.** From any successful renewal (expiry = +30s):
+attempt at +5s; if it fails at the maximum enforceable duration it ends
+by +12s; retry at +13s, failing by +20s; retry at +21s, succeeding by
++28s — inside the lease. A claim therefore survives **two consecutive
+maximum-duration transient renewal failures** and is renewed by the third
+attempt. The legitimate expiry point is equally exact: the claim dies
+when the renewal path keeps failing beyond that budget — roughly a third
+consecutive maximum-duration failure, i.e. the renewal path failing
+continuously for ≳20s of a 30s window without a single success (commit
+latency eats into these margins; it is small in practice but not bounded,
+as stated above). Past that point the Finding 7 residual applies
+unchanged: state writes stay fenced, concurrent invocation in the window
+cannot be excluded in-JVM, and the provider-idempotency gate stands.
+
+**The `now()` question — answered, and fixed.** PostgreSQL `now()` is
+`transaction_timestamp()`: fixed at transaction start, it does not advance
+inside a transaction. V9's renewal therefore had a stale-timestamp hole:
+a renewal whose transaction began while the claim was live, but whose
+UPDATE only executed after the lease had expired in wall-clock time (e.g.
+blocked on the task row's lock), passed `claim_expires_at > now()` against
+the stale start time and resurrected the expired claim, stamping the new
+expiry from the same stale base. The (claimed_by, attempts) fence blunted
+the worst case — a takeover in between moves the fence, so the stale
+renewal matched zero rows — but the check itself was wrong. **Migration
+V10** recreates the renewal function with `clock_timestamp()` (the real
+wall clock, advancing within a transaction) for both the liveness check
+and the new expiry. The claim function (V7) also uses `now()`; inspected:
+there a stale start time only ever shortens a new lease or refuses a
+takeover that wall-clock time would have allowed — the conservative
+direction — so it is deliberately left unchanged.
+
+Covered by tests: a heartbeat-level timing test proving the retry starts
+~1s after a maximum-duration failure rather than a full interval later
+(with a production-like 6s interval — the old schedule's gap would be
+~6s); five consecutive transient failures retried promptly with no
+claim-loss declaration, the sixth attempt succeeding; a no-overlap test
+pinning strictly serialized attempts per claim; and a database regression
+test for V10 that starts a renewal while its claim is live, blocks its
+UPDATE on the task row's lock past the wall-clock expiry, then releases
+the lock — the renewal must return false (under V9 it returned true), and
+a takeover claim by another executor then succeeds, proving the claim was
+genuinely dead. All previously existing tests are retained.

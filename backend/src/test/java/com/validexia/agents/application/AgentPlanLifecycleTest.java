@@ -1331,4 +1331,196 @@ class AgentPlanLifecycleTest {
         repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30),
         "once a connection is available the renewal succeeds — the failure was transient");
   }
+
+  /**
+   * Finding 11: after a transient failure the heartbeat must retry PROMPTLY, not after a full
+   * success interval. Under the old fixed-delay schedule, a maximum-duration failure (here: a 3s
+   * attempt against a deliberately production-like 6s interval) pushed the next attempt a full
+   * interval past the failure's end — with production numbers (10s interval, ~10s attempt) that
+   * lands at or after the 30s expiry, and the claim dies despite the tool still running. Here the
+   * gap between the failed attempt's end and the retry's start must be the short failure delay
+   * (~1s), nowhere near the 6s interval.
+   */
+  @Test
+  void heartbeatRetriesPromptlyAfterAMaximumDurationFailure() throws Exception {
+    ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    try {
+      AtomicInteger calls = new AtomicInteger();
+      AtomicReference<Long> firstAttemptEndNanos = new AtomicReference<>();
+      AtomicReference<Long> retryStartNanos = new AtomicReference<>();
+      CountDownLatch retried = new CountDownLatch(1);
+      TaskClaimHeartbeat.Renewer renewer =
+          () -> {
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+              try {
+                Thread.sleep(3000); // a near-maximum-duration attempt…
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+              firstAttemptEndNanos.set(System.nanoTime());
+              throw new RuntimeException("database unavailable"); // …that fails transiently
+            }
+            retryStartNanos.compareAndSet(null, System.nanoTime());
+            retried.countDown();
+            return true;
+          };
+      try (TaskClaimHeartbeat heartbeat = TaskClaimHeartbeat.start(scheduler, renewer, 6)) {
+        assertTrue(retried.await(20, TimeUnit.SECONDS), "the failed renewal was retried");
+        long gapMs =
+            TimeUnit.NANOSECONDS.toMillis(retryStartNanos.get() - firstAttemptEndNanos.get());
+        assertTrue(
+            gapMs <= 2500,
+            "the retry must start ~1s after the failure, not a full interval later; gap was "
+                + gapMs
+                + "ms");
+        assertFalse(heartbeat.claimLost());
+      }
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /**
+   * Finding 11: repeated transient failures never add up to a claim-loss declaration — loss is only
+   * ever the renewer returning false. Five failures in a row, each retried at the failure delay,
+   * and the sixth attempt succeeds: with a 3s success interval, fixed-delay scheduling would need
+   * ~18s for six attempts; the prompt-retry schedule lands them in ~8s.
+   */
+  @Test
+  void repeatedTransientFailuresNeverSignalLossAndEventuallyRenew() throws Exception {
+    ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    try {
+      AtomicInteger calls = new AtomicInteger();
+      CountDownLatch sixthCall = new CountDownLatch(1);
+      TaskClaimHeartbeat.Renewer renewer =
+          () -> {
+            int call = calls.incrementAndGet();
+            if (call >= 6) {
+              sixthCall.countDown();
+              return true;
+            }
+            throw new RuntimeException("database unavailable");
+          };
+      try (TaskClaimHeartbeat heartbeat = TaskClaimHeartbeat.start(scheduler, renewer, 3)) {
+        assertTrue(
+            sixthCall.await(15, TimeUnit.SECONDS),
+            "five transient failures were each retried promptly");
+        assertFalse(heartbeat.claimLost(), "transient failures never declare the claim lost");
+      }
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /** Finding 11: renewals for one claim never overlap — attempts are strictly serialized. */
+  @Test
+  void renewalsForOneClaimNeverOverlap() throws Exception {
+    ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
+    try {
+      AtomicInteger inFlight = new AtomicInteger();
+      AtomicInteger maxInFlight = new AtomicInteger();
+      AtomicInteger calls = new AtomicInteger();
+      TaskClaimHeartbeat.Renewer renewer =
+          () -> {
+            calls.incrementAndGet();
+            int now = inFlight.incrementAndGet();
+            maxInFlight.accumulateAndGet(now, Math::max);
+            try {
+              Thread.sleep(300);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            } finally {
+              inFlight.decrementAndGet();
+            }
+            return true;
+          };
+      try (TaskClaimHeartbeat heartbeat = TaskClaimHeartbeat.start(scheduler, renewer, 1)) {
+        Thread.sleep(4000);
+        assertFalse(heartbeat.claimLost());
+      }
+      assertTrue(calls.get() >= 2, "renewals kept cycling, got " + calls.get());
+      assertEquals(1, maxInFlight.get(), "renewal attempts for one claim must never overlap");
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /**
+   * Finding 11 regression (migration V10): a renewal whose transaction STARTED while the claim was
+   * live, but whose UPDATE only executes after the lease expired in wall-clock time (blocked on the
+   * task row's lock), must NOT renew. Under V9 the check used {@code now()} — the transaction-start
+   * timestamp — so the stale check passed and the expired claim was resurrected. V10 evaluates with
+   * {@code clock_timestamp()}: the renewal returns false, and a takeover by another executor proves
+   * the claim was genuinely dead.
+   */
+  @Test
+  void renewalCannotResurrectAClaimThatExpiredWhileItWasBlocked() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.stale");
+    UUID runId =
+        repository
+            .createRunWithPlan(
+                tenantId,
+                userId,
+                "test.stale",
+                "obj",
+                "AUTONOMOUS",
+                null,
+                "{}",
+                List.of(new PlanTask("test.count", "READ", "{}")))
+            .runId();
+    AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
+    // A 3-second lease: the claim expires ~3s from now.
+    ClaimOutcome claim = repository.claimTask(tenantId, userId, runId, task.id(), "exec-1", 3);
+    assertTrue(claim.claimed());
+
+    Connection lock = admin.getDataSource().getConnection();
+    try {
+      lock.setAutoCommit(false);
+      try (Statement statement = lock.createStatement()) {
+        statement.execute(
+            "UPDATE public.agent_tasks SET updated_at = now() WHERE id = '" + task.id() + "'");
+      }
+      // Start the renewal ~2s in: its transaction begins while the claim is still live
+      // (expiry ≈ +3s), but its UPDATE blocks on the lock above. Its 2s statement timeout
+      // would fire at ≈ +4.1s.
+      Thread.sleep(2000);
+      AtomicReference<Boolean> renewed = new AtomicReference<>();
+      AtomicReference<Throwable> renewalError = new AtomicReference<>();
+      Thread renewalThread =
+          new Thread(
+              () -> {
+                try {
+                  renewed.set(
+                      repository.renewTaskClaim(
+                          tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+                } catch (Throwable t) {
+                  renewalError.set(t);
+                }
+              });
+      renewalThread.start();
+      // Release the lock at ≈ +3.4s: after the wall-clock expiry (+3s), before the
+      // statement timeout (≈ +4.1s). The renewal now executes against an expired claim.
+      Thread.sleep(1400);
+      lock.rollback();
+      renewalThread.join(TimeUnit.SECONDS.toMillis(15));
+      assertFalse(renewalThread.isAlive(), "the blocked renewal completed");
+      assertTrue(
+          renewalError.get() == null, "the renewal must answer, not throw: " + renewalError.get());
+      assertEquals(
+          Boolean.FALSE,
+          renewed.get(),
+          "a renewal executing after wall-clock expiry must not resurrect the claim");
+    } finally {
+      lock.rollback();
+      lock.close();
+    }
+    // The claim really is dead: another executor takes it over.
+    assertTrue(
+        repository.claimTask(tenantId, userId, runId, task.id(), "exec-2", 30).claimed(),
+        "an expired claim is takeable by another executor");
+  }
 }
