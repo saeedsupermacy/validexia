@@ -16,6 +16,7 @@ import com.validexia.agents.domain.RunMode;
 import com.validexia.agents.infrastructure.AgentsRepository;
 import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
 import com.validexia.agents.infrastructure.AgentsRepository.ClaimOutcome;
+import com.validexia.agents.infrastructure.AgentsRepository.PlanTask;
 import com.validexia.audit.AuditService;
 import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
@@ -336,9 +337,17 @@ class AgentConcurrencyTest {
     AgentEngine engine = engineFor(tool, "test.race", "test.sensitive");
 
     UUID runId =
-        repository.createRun(tenantId, userId, "test.race", "obj", "APPROVAL", null, "{}").runId();
-    repository.addTask(
-        tenantId, userId, runId, 1, "test.sensitive", "SENSITIVE_WRITE", "{}", runId + ":1");
+        repository
+            .createRunWithPlan(
+                tenantId,
+                userId,
+                "test.race",
+                "obj",
+                "APPROVAL",
+                null,
+                "{}",
+                List.of(new PlanTask("test.sensitive", "SENSITIVE_WRITE", "{}")))
+            .runId();
 
     ExecutorService pool = Executors.newFixedThreadPool(2);
     try {
@@ -437,12 +446,18 @@ class AgentConcurrencyTest {
 
     UUID runId =
         repository
-            .createRun(tenantId, userId, "test.ambiguous", "obj", "AUTONOMOUS", null, "{}")
+            .createRunWithPlan(
+                tenantId,
+                userId,
+                "test.ambiguous",
+                "obj",
+                "AUTONOMOUS",
+                null,
+                "{}",
+                List.of(new PlanTask("test.dedup", "ROUTINE_WRITE", "{}")))
             .runId();
-    UUID taskId =
-        repository.addTask(
-            tenantId, userId, runId, 1, "test.dedup", "ROUTINE_WRITE", "{}", runId + ":1");
     AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
+    UUID taskId = task.id();
 
     // Executor X claims the task and its provider call succeeds — then X dies before
     // recording completion. The outcome is ambiguous from the system's point of view.
