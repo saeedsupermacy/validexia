@@ -12,10 +12,18 @@ import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
 import com.validexia.agents.infrastructure.AgentsRepository.ClaimLostException;
 import com.validexia.agents.infrastructure.AgentsRepository.ClaimOutcome;
 import com.validexia.agents.infrastructure.AgentsRepository.CreateRunResult;
+import com.validexia.agents.infrastructure.AgentsRepository.PlanTask;
 import com.validexia.audit.AuditService;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -28,36 +36,77 @@ import org.springframework.stereotype.Service;
  * without repeating completed tasks. Tasks are executed under leases with fencing (migration V7):
  * an executor claims a task before touching it, only the claim owner can park or complete it, and a
  * takeover is possible only after the lease expires — so concurrent executors divide a run's work
- * instead of duplicating it, and stale executors cannot commit state. Every meaningful transition
- * is written to the audit chain with the run's initiating user as the actor, and only by the
- * executor whose transition actually won.
+ * instead of duplicating it, and stale executors cannot commit state. A run and its plan are
+ * persisted atomically (migration V8): the plan is computed first, then committed with the run in a
+ * single transaction, so no caller can ever observe — let alone execute or settle — a partially
+ * initialized run. Every meaningful transition is written to the audit chain with the run's
+ * initiating user as the actor, and only by the executor whose transition actually won.
  */
 @Service
 public class AgentEngine {
 
   /**
    * How long a task claim lasts before another executor may treat the owner as dead and take over.
-   * Must exceed the slowest tool's expected runtime: fencing stops a stale owner from committing
-   * state afterwards, and tools carry the task's stable idempotency key so an in-flight provider
-   * call can be deduplicated or reconciled — but a lease comfortably longer than real tool latency
-   * keeps takeovers rare.
+   * The database validates the range (1..3600 seconds, migration V8).
    */
   private static final int LEASE_SECONDS = 30;
+
+  /**
+   * Hard ceiling on a single tool invocation, enforced by the engine. It sits below the lease with
+   * a 10-second margin: a tool that overruns is interrupted and its task failed while the claim is
+   * still ours, so a timeout can never strand a task in a state where a takeover executor re-runs
+   * it while the original call is still in flight. A tool that cannot finish within this ceiling
+   * must not be registered until lease renewal (heartbeat) exists — see the concurrency audit's
+   * remaining limits.
+   */
+  private static final int TOOL_TIMEOUT_SECONDS = 20;
 
   private final AgentsRepository repository;
   private final AgentRegistry agents;
   private final ToolRegistry tools;
   private final AuditService audit;
+  private final int leaseSeconds;
+  private final int toolTimeoutSeconds;
+  private final ExecutorService toolExecutor;
 
   public AgentEngine(
       AgentsRepository repository, AgentRegistry agents, ToolRegistry tools, AuditService audit) {
+    this(repository, agents, tools, audit, LEASE_SECONDS, TOOL_TIMEOUT_SECONDS);
+  }
+
+  AgentEngine(
+      AgentsRepository repository,
+      AgentRegistry agents,
+      ToolRegistry tools,
+      AuditService audit,
+      int leaseSeconds,
+      int toolTimeoutSeconds) {
+    if (leaseSeconds < 1 || toolTimeoutSeconds < 1 || toolTimeoutSeconds >= leaseSeconds) {
+      throw new IllegalArgumentException(
+          "tool timeout must be positive and below the lease duration");
+    }
     this.repository = repository;
     this.agents = agents;
     this.tools = tools;
     this.audit = audit;
+    this.leaseSeconds = leaseSeconds;
+    this.toolTimeoutSeconds = toolTimeoutSeconds;
+    this.toolExecutor =
+        Executors.newCachedThreadPool(
+            runnable -> {
+              Thread thread = new Thread(runnable, "agent-tool-invocation");
+              thread.setDaemon(true);
+              return thread;
+            });
   }
 
-  /** Creates a run (idempotently when a key is given), persists its plan, and starts execution. */
+  /**
+   * Creates a run (idempotently when a key is given) and starts execution. The plan is computed
+   * BEFORE anything is persisted — a planner failure leaves no run behind — and the run and its
+   * complete plan then commit in a single transaction (migration V8). A duplicate caller with the
+   * same idempotency key receives the already-committed run and plan; it can never observe a
+   * partially initialized one.
+   */
   public AgentData.Run createAndStart(
       UUID tenantId,
       UUID userId,
@@ -67,26 +116,17 @@ public class AgentEngine {
       @Nullable String idempotencyKey,
       String contextJson) {
     AgentPlanner planner = agents.require(agentKey);
+    List<AgentPlanner.PlannedTask> planned = planner.plan(objective, contextJson);
+    List<PlanTask> plan = new ArrayList<>(planned.size());
+    for (AgentPlanner.PlannedTask task : planned) {
+      ToolHandler tool = tools.require(task.toolKey());
+      plan.add(new PlanTask(task.toolKey(), tool.riskClass().name(), task.inputJson()));
+    }
     CreateRunResult created =
-        repository.createRun(
-            tenantId, userId, agentKey, objective, mode.name(), idempotencyKey, contextJson);
+        repository.createRunWithPlan(
+            tenantId, userId, agentKey, objective, mode.name(), idempotencyKey, contextJson, plan);
     UUID runId = created.runId();
     if (created.wasCreated()) {
-      List<AgentPlanner.PlannedTask> plan = planner.plan(objective, contextJson);
-      int seq = 1;
-      for (AgentPlanner.PlannedTask task : plan) {
-        ToolHandler tool = tools.require(task.toolKey());
-        repository.addTask(
-            tenantId,
-            userId,
-            runId,
-            seq,
-            task.toolKey(),
-            tool.riskClass().name(),
-            task.inputJson(),
-            runId + ":" + seq);
-        seq++;
-      }
       audit.appendForTenant(
           tenantId,
           userId,
@@ -111,6 +151,13 @@ public class AgentEngine {
     AgentRunRow run = requireRunRow(tenantId, userId, runId);
     RunState state = RunState.valueOf(run.state());
     if (state == RunState.SUCCEEDED || state == RunState.FAILED || state == RunState.CANCELLED) {
+      return run;
+    }
+    if (!run.planReady()) {
+      // Plan initialization is incomplete (only possible for a run created outside the
+      // atomic path). Such a run must never be executed or settled: an empty task list here
+      // means "not yet initialized", not "nothing to do". Readiness is explicit state
+      // (migration V8), never inferred from the task count.
       return run;
     }
     if (state == RunState.PENDING) {
@@ -243,7 +290,7 @@ public class AgentEngine {
       Set<UUID> approvedTaskIds,
       String executorId) {
     ClaimOutcome claim =
-        repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, LEASE_SECONDS);
+        repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, leaseSeconds);
     if (!claim.claimed()) {
       switch (TaskState.valueOf(claim.taskState())) {
         case WAITING_APPROVAL -> {
@@ -316,7 +363,8 @@ public class AgentEngine {
     String output;
     try {
       output =
-          tool.execute(
+          invokeTool(
+              tool,
               new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt),
               task.inputJson());
     } catch (RuntimeException e) {
@@ -358,6 +406,41 @@ public class AgentEngine {
     // the tool carried the task's stable idempotency key, so a provider-side effect can be
     // deduplicated or reconciled by key.
     return requireRunRow(tenantId, userId, run.id());
+  }
+
+  /**
+   * Runs one tool invocation under the engine's timeout (below the task lease, with margin). A tool
+   * that overruns is interrupted and reported as a failure, so its task is settled by the claim
+   * owner while the claim is still valid. A tool that ignores interruption may keep running in the
+   * background, but its late result is discarded — nothing reads the future again — and its
+   * invocation carried the task's stable idempotency key, so a provider-side effect can be
+   * deduplicated or reconciled by key.
+   */
+  private String invokeTool(ToolHandler tool, ToolInvocation invocation, String inputJson) {
+    Future<String> future = toolExecutor.submit(() -> tool.execute(invocation, inputJson));
+    try {
+      return future.get(toolTimeoutSeconds, TimeUnit.SECONDS);
+    } catch (TimeoutException e) {
+      future.cancel(true);
+      throw new IllegalStateException(
+          "Tool "
+              + tool.key()
+              + " timed out after "
+              + toolTimeoutSeconds
+              + "s (lease "
+              + leaseSeconds
+              + "s)");
+    } catch (InterruptedException e) {
+      future.cancel(true);
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("Interrupted while executing tool " + tool.key());
+    } catch (ExecutionException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof RuntimeException runtime) {
+        throw runtime;
+      }
+      throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
+    }
   }
 
   /** Records a human decision; an approval resumes the run. Returns the run afterwards. */

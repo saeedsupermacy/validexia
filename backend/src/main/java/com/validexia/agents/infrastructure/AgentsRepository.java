@@ -45,7 +45,8 @@ public class AgentsRepository {
       @Nullable String error,
       UUID initiatedBy,
       Instant createdAt,
-      Instant updatedAt) {}
+      Instant updatedAt,
+      boolean planReady) {}
 
   public record AgentTaskRow(
       UUID id,
@@ -74,6 +75,9 @@ public class AgentsRepository {
       @Nullable Instant decidedAt) {}
 
   public record CreateRunResult(UUID runId, boolean wasCreated) {}
+
+  /** One step of a run's plan, persisted atomically with the run itself (V8). */
+  public record PlanTask(String toolKey, String riskClass, String inputJson) {}
 
   private final JdbcTemplate jdbc;
   private final TransactionTemplate transactions;
@@ -160,6 +164,69 @@ public class AgentsRepository {
                         rs.getObject("run_id", UUID.class), rs.getBoolean("was_created"))));
   }
 
+  /**
+   * Creates a run and persists its complete plan in one transaction (V8). The run only becomes
+   * visible — to this caller and to any duplicate idempotency-key caller — with its full plan
+   * committed and marked ready, so no caller can ever observe or execute a partial plan. An empty
+   * {@code plan} is legitimate: the run is created plan-ready with zero tasks.
+   */
+  public CreateRunResult createRunWithPlan(
+      UUID tenantId,
+      UUID userId,
+      String agentKey,
+      String objective,
+      String mode,
+      @Nullable String idempotencyKey,
+      String contextJson,
+      List<PlanTask> plan) {
+    StringBuilder tasksJson = new StringBuilder("[");
+    for (int i = 0; i < plan.size(); i++) {
+      PlanTask task = plan.get(i);
+      if (i > 0) {
+        tasksJson.append(',');
+      }
+      tasksJson
+          .append("{\"toolKey\":")
+          .append(quoteJson(task.toolKey()))
+          .append(",\"riskClass\":")
+          .append(quoteJson(task.riskClass()))
+          .append(",\"input\":")
+          .append(task.inputJson())
+          .append('}');
+    }
+    tasksJson.append(']');
+    return inTenant(
+        tenantId,
+        userId,
+        () ->
+            jdbc.queryForObject(
+                "SELECT run_id, was_created FROM public.create_agent_run_with_plan(?, ?, ?, ?,"
+                    + " ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))",
+                new Object[] {
+                  tenantId,
+                  agentKey,
+                  objective,
+                  mode,
+                  userId,
+                  idempotencyKey,
+                  contextJson,
+                  tasksJson.toString()
+                },
+                new int[] {
+                  Types.OTHER,
+                  Types.VARCHAR,
+                  Types.VARCHAR,
+                  Types.VARCHAR,
+                  Types.OTHER,
+                  Types.VARCHAR,
+                  Types.OTHER,
+                  Types.OTHER
+                },
+                (rs, rowNum) ->
+                    new CreateRunResult(
+                        rs.getObject("run_id", UUID.class), rs.getBoolean("was_created"))));
+  }
+
   public Optional<AgentRunRow> getRun(UUID tenantId, UUID userId, UUID runId) {
     return inTenant(
         tenantId,
@@ -168,7 +235,7 @@ public class AgentsRepository {
             jdbc
                 .query(
                     "SELECT id, agent_key, objective, mode, state, result, error, initiated_by,"
-                        + " created_at, updated_at FROM public.get_agent_run(?, ?)",
+                        + " created_at, updated_at, plan_ready FROM public.get_agent_run(?, ?)",
                     (rs, rowNum) -> mapRun(rs),
                     tenantId,
                     runId)
@@ -183,7 +250,7 @@ public class AgentsRepository {
         () ->
             jdbc.query(
                 "SELECT id, agent_key, objective, mode, state, result, error, initiated_by,"
-                    + " created_at, updated_at FROM public.list_agent_runs(?)",
+                    + " created_at, updated_at, plan_ready FROM public.list_agent_runs(?)",
                 (rs, rowNum) -> mapRun(rs),
                 tenantId));
   }
@@ -404,7 +471,25 @@ public class AgentsRepository {
         rs.getString("error"),
         rs.getObject("initiated_by", UUID.class),
         toInstant(rs.getObject("created_at", OffsetDateTime.class)),
-        toInstant(rs.getObject("updated_at", OffsetDateTime.class)));
+        toInstant(rs.getObject("updated_at", OffsetDateTime.class)),
+        rs.getBoolean("plan_ready"));
+  }
+
+  /** Minimal JSON string quoting for plan serialization (keys are registry-controlled). */
+  private static String quoteJson(String value) {
+    StringBuilder out = new StringBuilder("\"");
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      switch (c) {
+        case '"' -> out.append("\\\"");
+        case '\\' -> out.append("\\\\");
+        case '\n' -> out.append("\\n");
+        case '\r' -> out.append("\\r");
+        case '\t' -> out.append("\\t");
+        default -> out.append(c);
+      }
+    }
+    return out.append('"').toString();
   }
 
   private <T> T inTenant(UUID tenantId, @Nullable UUID userId, Supplier<T> work) {
