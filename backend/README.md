@@ -67,15 +67,20 @@ All configuration is via environment variables (see `src/main/resources/applicat
 
 ## Run locally
 
-The compose stack reads both local passwords from the environment
-(`DB_PASSWORD` for the application role, `FLYWAY_PASSWORD` for the migrator),
-each with a throwaway local-only default, so exporting either once keeps the
-database and the app in agreement.
+Both local passwords come from the environment, each with a throwaway
+local-only default: `DB_PASSWORD` (application role — compose passes it into
+the database container, whose init script creates the role with it, and the
+app receives the same value on the host) and `FLYWAY_PASSWORD` (migrator,
+independent of `DB_PASSWORD`). To use custom values, **export them before
+both commands below** — inline prefixes on the `gradle` line alone would not
+reach `docker compose`. (A `backend/.env` file feeds compose only, never the
+app, so it is not a substitute for exporting.)
 
 ```bash
+export DB_PASSWORD=${DB_PASSWORD:-validexia-app-dev}
+export FLYWAY_PASSWORD=${FLYWAY_PASSWORD:-validexia-migrator-dev}
 docker compose up -d db        # postgres:17 + dev roles (docker/init/01-roles.sh)
-DB_PASSWORD=${DB_PASSWORD:-validexia-app-dev} \
-FLYWAY_USER=validexia_migrator FLYWAY_PASSWORD=${FLYWAY_PASSWORD:-validexia-migrator-dev} \
+FLYWAY_USER=validexia_migrator \
 CLERK_ISSUER=<your instance> CLERK_JWKS_URL=<your instance>/.well-known/jwks.json \
 gradle bootRun
 curl localhost:8080/api/v1/health

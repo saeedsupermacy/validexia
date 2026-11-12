@@ -11,6 +11,14 @@ services:
       # never a production credential.
       POSTGRES_PASSWORD: ${FLYWAY_PASSWORD:-validexia-migrator-dev}
       POSTGRES_DB: validexia
+      # Passed through into the container so the init script
+      # (docker/init/01-roles.sh, which runs INSIDE the container) creates
+      # the application role with exactly the password the application
+      # itself receives on the host as DB_PASSWORD. Without this line the
+      # container would only ever see the built-in default, and a custom
+      # host DB_PASSWORD would silently diverge. Local development ONLY,
+      # same throwaway default.
+      DB_PASSWORD: ${DB_PASSWORD:-validexia-app-dev}
     ports:
       - "5432:5432"
     volumes:
