@@ -1,6 +1,8 @@
 package com.validexia.agents.infrastructure;
 
 import com.validexia.platform.tenancy.TenantContext;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -9,6 +11,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -44,7 +48,8 @@ public class AgentsRepository {
       @Nullable String error,
       UUID initiatedBy,
       Instant createdAt,
-      Instant updatedAt) {}
+      Instant updatedAt,
+      boolean planReady) {}
 
   public record AgentTaskRow(
       UUID id,
@@ -55,7 +60,11 @@ public class AgentsRepository {
       String inputJson,
       @Nullable String outputJson,
       @Nullable String error,
-      int attempts) {}
+      int attempts,
+      String idempotencyKey) {}
+
+  /** Outcome of a lease claim attempt on a task (V7). */
+  public record ClaimOutcome(boolean claimed, int attempt, String taskState) {}
 
   public record AgentApprovalRow(
       UUID id,
@@ -69,6 +78,9 @@ public class AgentsRepository {
       @Nullable Instant decidedAt) {}
 
   public record CreateRunResult(UUID runId, boolean wasCreated) {}
+
+  /** One step of a run's plan, persisted atomically with the run itself (V8). */
+  public record PlanTask(String toolKey, String riskClass, String inputJson) {}
 
   private final JdbcTemplate jdbc;
   private final TransactionTemplate transactions;
@@ -155,6 +167,69 @@ public class AgentsRepository {
                         rs.getObject("run_id", UUID.class), rs.getBoolean("was_created"))));
   }
 
+  /**
+   * Creates a run and persists its complete plan in one transaction (V8). The run only becomes
+   * visible — to this caller and to any duplicate idempotency-key caller — with its full plan
+   * committed and marked ready, so no caller can ever observe or execute a partial plan. An empty
+   * {@code plan} is legitimate: the run is created plan-ready with zero tasks.
+   */
+  public CreateRunResult createRunWithPlan(
+      UUID tenantId,
+      UUID userId,
+      String agentKey,
+      String objective,
+      String mode,
+      @Nullable String idempotencyKey,
+      String contextJson,
+      List<PlanTask> plan) {
+    StringBuilder tasksJson = new StringBuilder("[");
+    for (int i = 0; i < plan.size(); i++) {
+      PlanTask task = plan.get(i);
+      if (i > 0) {
+        tasksJson.append(',');
+      }
+      tasksJson
+          .append("{\"toolKey\":")
+          .append(quoteJson(task.toolKey()))
+          .append(",\"riskClass\":")
+          .append(quoteJson(task.riskClass()))
+          .append(",\"input\":")
+          .append(task.inputJson())
+          .append('}');
+    }
+    tasksJson.append(']');
+    return inTenant(
+        tenantId,
+        userId,
+        () ->
+            jdbc.queryForObject(
+                "SELECT run_id, was_created FROM public.create_agent_run_with_plan(?, ?, ?, ?,"
+                    + " ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))",
+                new Object[] {
+                  tenantId,
+                  agentKey,
+                  objective,
+                  mode,
+                  userId,
+                  idempotencyKey,
+                  contextJson,
+                  tasksJson.toString()
+                },
+                new int[] {
+                  Types.OTHER,
+                  Types.VARCHAR,
+                  Types.VARCHAR,
+                  Types.VARCHAR,
+                  Types.OTHER,
+                  Types.VARCHAR,
+                  Types.OTHER,
+                  Types.OTHER
+                },
+                (rs, rowNum) ->
+                    new CreateRunResult(
+                        rs.getObject("run_id", UUID.class), rs.getBoolean("was_created"))));
+  }
+
   public Optional<AgentRunRow> getRun(UUID tenantId, UUID userId, UUID runId) {
     return inTenant(
         tenantId,
@@ -163,7 +238,7 @@ public class AgentsRepository {
             jdbc
                 .query(
                     "SELECT id, agent_key, objective, mode, state, result, error, initiated_by,"
-                        + " created_at, updated_at FROM public.get_agent_run(?, ?)",
+                        + " created_at, updated_at, plan_ready FROM public.get_agent_run(?, ?)",
                     (rs, rowNum) -> mapRun(rs),
                     tenantId,
                     runId)
@@ -178,7 +253,7 @@ public class AgentsRepository {
         () ->
             jdbc.query(
                 "SELECT id, agent_key, objective, mode, state, result, error, initiated_by,"
-                    + " created_at, updated_at FROM public.list_agent_runs(?)",
+                    + " created_at, updated_at, plan_ready FROM public.list_agent_runs(?)",
                 (rs, rowNum) -> mapRun(rs),
                 tenantId));
   }
@@ -241,8 +316,8 @@ public class AgentsRepository {
         userId,
         () ->
             jdbc.query(
-                "SELECT id, seq, tool_key, risk_class, state, input, output, error, attempts"
-                    + " FROM public.list_agent_tasks(?, ?)",
+                "SELECT id, seq, tool_key, risk_class, state, input, output, error, attempts,"
+                    + " idempotency_key FROM public.list_agent_tasks(?, ?)",
                 (rs, rowNum) ->
                     new AgentTaskRow(
                         rs.getObject("id", UUID.class),
@@ -253,16 +328,92 @@ public class AgentsRepository {
                         rs.getString("input"),
                         rs.getString("output"),
                         rs.getString("error"),
-                        rs.getInt("attempts")),
+                        rs.getInt("attempts"),
+                        rs.getString("idempotency_key")),
                 tenantId,
                 runId));
   }
 
-  public boolean transitionTask(
+  /**
+   * Claims a task under a lease (V7). Succeeds from PENDING, or from RUNNING once the previous
+   * executor's lease has expired. On success the outcome carries the fencing attempt number the
+   * caller must present to {@link #completeTask} / {@link #parkTaskForApproval}.
+   */
+  public ClaimOutcome claimTask(
+      UUID tenantId, UUID userId, UUID runId, UUID taskId, String executorId, int leaseSeconds) {
+    return inTenant(
+        tenantId,
+        userId,
+        () ->
+            jdbc.queryForObject(
+                "SELECT claimed, attempt, task_state FROM public.claim_agent_task(?, ?, ?, ?, ?)",
+                (rs, rowNum) ->
+                    new ClaimOutcome(
+                        rs.getBoolean("claimed"), rs.getInt("attempt"), rs.getString("task_state")),
+                tenantId,
+                runId,
+                taskId,
+                executorId,
+                leaseSeconds));
+  }
+
+  /**
+   * Renews a live claim's lease (V9), fenced on executor id and attempt. Returns false when the
+   * caller no longer owns the claim — a different executor holds it, the attempt moved on, or the
+   * lease already expired (an expired claim cannot be resurrected).
+   *
+   * <p>The statement carries a hard query timeout (lease/3, at least one second, at most two): a
+   * renewal that hangs — a locked row, a stalled database — fails bounded as a transient error
+   * instead of occupying its heartbeat thread and connection indefinitely, and the heartbeat
+   * retries promptly (Finding 11). A hung database call is never silently treated as quick. The
+   * renewal's enforceable bound is: connection acquisition ≤ 5s (the pool's {@code
+   * connection-timeout}, set explicitly in application.yaml — Finding 10) + statement ≤ 2s (this
+   * cap). The transaction commit that follows is NOT hard-bounded — no client-side timeout governs
+   * it; it is a single small round trip, fast in every observed environment, and any pathological
+   * commit stall belongs to the documented outage residual rather than to this bound. Against the
+   * production schedule (30s lease, renewals every 5s, retries 1s after a failure), the ~7s
+   * enforceable attempt bound means a claim survives two consecutive maximum-duration transient
+   * failures and is renewed by the third attempt before expiry.
+   */
+  public boolean renewTaskClaim(
+      UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, int leaseSeconds) {
+    int queryTimeoutSeconds = Math.max(1, Math.min(2, leaseSeconds / 3));
+    return inTenant(
+        tenantId,
+        userId,
+        () ->
+            Boolean.TRUE.equals(
+                jdbc.execute(
+                    (ConnectionCallback<Boolean>)
+                        connection -> {
+                          try (PreparedStatement statement =
+                              connection.prepareStatement(
+                                  "SELECT public.renew_agent_task_claim(?, ?, ?, ?, ?)")) {
+                            statement.setQueryTimeout(queryTimeoutSeconds);
+                            statement.setObject(1, tenantId);
+                            statement.setObject(2, taskId);
+                            statement.setString(3, executorId);
+                            statement.setInt(4, attempt);
+                            statement.setInt(5, leaseSeconds);
+                            try (ResultSet results = statement.executeQuery()) {
+                              results.next();
+                              return results.getBoolean(1);
+                            }
+                          }
+                        })));
+  }
+
+  /**
+   * Fenced completion: only the executor holding the claim (matching executor id and attempt) can
+   * move the task to SUCCEEDED or FAILED. Returns false when the claim was lost — the caller must
+   * then discard its result and stay silent (no audit event).
+   */
+  public boolean completeTask(
       UUID tenantId,
       UUID userId,
       UUID taskId,
-      String expected,
+      String executorId,
+      int attempt,
       String target,
       @Nullable String outputJson,
       @Nullable String error) {
@@ -272,12 +423,13 @@ public class AgentsRepository {
         () ->
             Boolean.TRUE.equals(
                 jdbc.queryForObject(
-                    "SELECT public.transition_agent_task(?, ?, ?, ?, CAST(? AS jsonb), ?)",
-                    new Object[] {tenantId, taskId, expected, target, outputJson, error},
+                    "SELECT public.complete_agent_task(?, ?, ?, ?, ?, CAST(? AS jsonb), ?)",
+                    new Object[] {tenantId, taskId, executorId, attempt, target, outputJson, error},
                     new int[] {
                       Types.OTHER,
                       Types.OTHER,
                       Types.VARCHAR,
+                      Types.INTEGER,
                       Types.VARCHAR,
                       Types.OTHER,
                       Types.VARCHAR
@@ -285,17 +437,39 @@ public class AgentsRepository {
                     Boolean.class)));
   }
 
-  public UUID requestApproval(UUID tenantId, UUID userId, UUID taskId, String reason) {
-    return inTenant(
-        tenantId,
-        userId,
-        () ->
-            jdbc.queryForObject(
-                "SELECT public.request_agent_approval(?, ?, ?)",
-                UUID.class,
-                tenantId,
-                taskId,
-                reason));
+  /** Raised when an executor tries to park a task whose claim it no longer holds. */
+  public static final class ClaimLostException extends RuntimeException {
+    public ClaimLostException(UUID taskId) {
+      super("Task claim lost: " + taskId);
+    }
+  }
+
+  /**
+   * Parks a claimed task for human approval and creates its approval row atomically. Throws {@link
+   * ClaimLostException} if the claim was lost, so a racing executor can never create a duplicate
+   * approval or surface a spurious failure.
+   */
+  public UUID parkTaskForApproval(
+      UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, String reason) {
+    try {
+      return inTenant(
+          tenantId,
+          userId,
+          () ->
+              jdbc.queryForObject(
+                  "SELECT public.park_agent_task_for_approval(?, ?, ?, ?, ?)",
+                  UUID.class,
+                  tenantId,
+                  taskId,
+                  executorId,
+                  attempt,
+                  reason));
+    } catch (DataAccessException e) {
+      if (e.getMessage() != null && e.getMessage().contains("task claim lost")) {
+        throw new ClaimLostException(taskId);
+      }
+      throw e;
+    }
   }
 
   public boolean decideApproval(
@@ -346,7 +520,25 @@ public class AgentsRepository {
         rs.getString("error"),
         rs.getObject("initiated_by", UUID.class),
         toInstant(rs.getObject("created_at", OffsetDateTime.class)),
-        toInstant(rs.getObject("updated_at", OffsetDateTime.class)));
+        toInstant(rs.getObject("updated_at", OffsetDateTime.class)),
+        rs.getBoolean("plan_ready"));
+  }
+
+  /** Minimal JSON string quoting for plan serialization (keys are registry-controlled). */
+  private static String quoteJson(String value) {
+    StringBuilder out = new StringBuilder("\"");
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      switch (c) {
+        case '"' -> out.append("\\\"");
+        case '\\' -> out.append("\\\\");
+        case '\n' -> out.append("\\n");
+        case '\r' -> out.append("\\r");
+        case '\t' -> out.append("\\t");
+        default -> out.append(c);
+      }
+    }
+    return out.append('"').toString();
   }
 
   private <T> T inTenant(UUID tenantId, @Nullable UUID userId, Supplier<T> work) {
