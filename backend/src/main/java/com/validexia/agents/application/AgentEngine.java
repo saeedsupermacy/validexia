@@ -422,48 +422,69 @@ public class AgentEngine {
       return requireRunRow(tenantId, userId, run.id());
     }
     ToolHandler tool = tools.require(task.toolKey());
-    String output;
     try {
-      output = invokeTool(tenantId, userId, run, task, executorId, attempt, tool);
-    } catch (RuntimeException e) {
-      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+      String output;
+      try {
+        output = invokeTool(tenantId, userId, run, task, executorId, attempt, tool);
+      } catch (RuntimeException e) {
+        String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        if (repository.completeTask(
+            tenantId,
+            userId,
+            task.id(),
+            executorId,
+            attempt,
+            TaskState.FAILED.name(),
+            null,
+            message)) {
+          return failRun(tenantId, userId, run, message);
+        }
+        // The claim was lost while the tool ran; its failure is not ours to record.
+        return requireRunRow(tenantId, userId, run.id());
+      }
       if (repository.completeTask(
           tenantId,
           userId,
           task.id(),
           executorId,
           attempt,
-          TaskState.FAILED.name(),
-          null,
-          message)) {
-        return failRun(tenantId, userId, run, message);
+          TaskState.SUCCEEDED.name(),
+          output,
+          null)) {
+        audit.appendForTenant(
+            tenantId,
+            userId,
+            "AGENT_TASK_EXECUTED",
+            "agent_task",
+            task.id().toString(),
+            "{\"tool\":\"" + task.toolKey() + "\",\"riskClass\":\"" + risk.name() + "\"}");
+        return null;
       }
-      // The claim was lost while the tool ran; its failure is not ours to record.
+      // The claim was lost while the tool ran (lease expired, another executor took over):
+      // discard our result silently. The current owner's outcome is the one that counts, and
+      // the tool carried the task's stable idempotency key, so a provider-side effect can be
+      // deduplicated or reconciled by key.
       return requireRunRow(tenantId, userId, run.id());
+    } finally {
+      restoreAbsorbedCallerInterrupt();
     }
-    if (repository.completeTask(
-        tenantId,
-        userId,
-        task.id(),
-        executorId,
-        attempt,
-        TaskState.SUCCEEDED.name(),
-        output,
-        null)) {
-      audit.appendForTenant(
-          tenantId,
-          userId,
-          "AGENT_TASK_EXECUTED",
-          "agent_task",
-          task.id().toString(),
-          "{\"tool\":\"" + task.toolKey() + "\",\"riskClass\":\"" + risk.name() + "\"}");
-      return null;
+  }
+
+  /**
+   * Set by {@link #invokeTool} when it absorbs an interruption of the engine thread, consumed here:
+   * the caller's interrupt status is restored only after the invocation has ended AND its outcome
+   * has been recorded. Restoring it before the outcome writes is a real failure mode, not a nicety
+   * — interruptible infrastructure (a JDBC connection pool waiting for a free connection, above
+   * all) can fail exactly those writes when the calling thread's interrupt flag is set.
+   */
+  private static final ThreadLocal<Boolean> ABSORBED_CALLER_INTERRUPT =
+      ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+  private static void restoreAbsorbedCallerInterrupt() {
+    if (Boolean.TRUE.equals(ABSORBED_CALLER_INTERRUPT.get())) {
+      ABSORBED_CALLER_INTERRUPT.remove();
+      Thread.currentThread().interrupt();
     }
-    // The claim was lost while the tool ran (lease expired, another executor took over):
-    // discard our result silently. The current owner's outcome is the one that counts, and
-    // the tool carried the task's stable idempotency key, so a provider-side effect can be
-    // deduplicated or reconciled by key.
-    return requireRunRow(tenantId, userId, run.id());
   }
 
   /**
@@ -482,11 +503,12 @@ public class AgentEngine {
    * a second copy.
    *
    * <p>Interruption of the CALLER (this engine thread) is absorbed the same way (Finding 8): the
-   * tool's interruption is requested, the caller's interrupt status is remembered — deliberately
-   * NOT restored yet, or every subsequent wait would throw immediately — and observing continues
-   * with the heartbeat alive. The caller's interrupt status is restored only after the invocation
-   * has actually ended, in the finally below; the heartbeat closes only as this method leaves,
-   * which is always after the invocation's end (or before its start, on saturation).
+   * tool's interruption is requested, the caller's interrupt status is recorded — deliberately NOT
+   * restored yet, or every subsequent wait would throw immediately — and observing continues with
+   * the heartbeat alive. {@code executeTask} restores the status only after the invocation has
+   * ended AND its outcome has been recorded (see {@code ABSORBED_CALLER_INTERRUPT}); the heartbeat
+   * closes only as this method leaves, which is always after the invocation's end (or before its
+   * start, on saturation).
    *
    * <p>The one immediate failure is saturation: if the bounded executor rejects the submission, the
    * invocation never started, so failing the task at once is safe and truthful.
@@ -502,7 +524,6 @@ public class AgentEngine {
     ToolInvocation invocation =
         new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt);
     ToolRun call = new ToolRun(tool, invocation, task.inputJson());
-    boolean callerInterrupted = false;
     try (TaskClaimHeartbeat heartbeat =
         TaskClaimHeartbeat.start(
             heartbeatScheduler,
@@ -520,56 +541,51 @@ public class AgentEngine {
       boolean interruptRequested = false;
       boolean timedOut = false;
       long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(executionBudgetSeconds);
-      try {
-        while (true) {
-          try {
-            return future.get(200, TimeUnit.MILLISECONDS);
-          } catch (TimeoutException slice) {
-            if (!interruptRequested && heartbeat.claimLost()) {
-              call.requestInterrupt();
-              interruptRequested = true;
-            } else if (!interruptRequested && System.nanoTime() >= deadlineNanos) {
-              timedOut = true;
-              call.requestInterrupt();
-              interruptRequested = true;
-            }
-            // Otherwise keep waiting: a possibly-running invocation is never abandoned.
-          } catch (InterruptedException e) {
-            // The caller was interrupted, not the invocation. Request the tool's interruption
-            // and keep observing: abandoning the wait here would close the heartbeat and let
-            // the claim expire underneath a tool that may still be running. The interrupt
-            // throw cleared the caller's flag; it is restored in the finally, after the
-            // invocation has actually ended.
-            callerInterrupted = true;
-            if (!interruptRequested) {
-              call.requestInterrupt();
-              interruptRequested = true;
-            }
-          } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (timedOut) {
-              String causeMessage =
-                  cause == null || cause.getMessage() == null
-                      ? String.valueOf(cause)
-                      : cause.getMessage();
-              throw new IllegalStateException(
-                  "Tool "
-                      + tool.key()
-                      + " timed out after "
-                      + executionBudgetSeconds
-                      + "s (interruption requested; the invocation has ended): "
-                      + causeMessage,
-                  cause);
-            }
-            if (cause instanceof RuntimeException runtime) {
-              throw runtime;
-            }
-            throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
+      while (true) {
+        try {
+          return future.get(200, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException slice) {
+          if (!interruptRequested && heartbeat.claimLost()) {
+            call.requestInterrupt();
+            interruptRequested = true;
+          } else if (!interruptRequested && System.nanoTime() >= deadlineNanos) {
+            timedOut = true;
+            call.requestInterrupt();
+            interruptRequested = true;
           }
-        }
-      } finally {
-        if (callerInterrupted) {
-          Thread.currentThread().interrupt();
+          // Otherwise keep waiting: a possibly-running invocation is never abandoned.
+        } catch (InterruptedException e) {
+          // The caller was interrupted, not the invocation. Request the tool's interruption
+          // and keep observing: abandoning the wait here would close the heartbeat and let
+          // the claim expire underneath a tool that may still be running. The interrupt
+          // throw cleared the caller's flag; it is deliberately NOT restored here (every
+          // subsequent wait would throw immediately) but recorded — executeTask restores it
+          // after the invocation has ended and its outcome has been recorded.
+          ABSORBED_CALLER_INTERRUPT.set(Boolean.TRUE);
+          if (!interruptRequested) {
+            call.requestInterrupt();
+            interruptRequested = true;
+          }
+        } catch (ExecutionException e) {
+          Throwable cause = e.getCause();
+          if (timedOut) {
+            String causeMessage =
+                cause == null || cause.getMessage() == null
+                    ? String.valueOf(cause)
+                    : cause.getMessage();
+            throw new IllegalStateException(
+                "Tool "
+                    + tool.key()
+                    + " timed out after "
+                    + executionBudgetSeconds
+                    + "s (interruption requested; the invocation has ended): "
+                    + causeMessage,
+                cause);
+          }
+          if (cause instanceof RuntimeException runtime) {
+            throw runtime;
+          }
+          throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
         }
       }
     }
