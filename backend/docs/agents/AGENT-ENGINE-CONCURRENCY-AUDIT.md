@@ -331,3 +331,64 @@ tool that honours interruption ends, and only then is its task failed.
   is the identified route if hard timeouts ever become a requirement; it is
   deliberately not claimed here.
 - The earlier "no lease heartbeat" limit is superseded by this section.
+
+---
+
+## Follow-up findings (PR #3 review, 2026-11-12) — Findings 8 and 9, RESOLVED
+
+**Finding 8 — caller-thread interruption closed the heartbeat.** `invokeTool`'s
+`InterruptedException` handler interrupted the tool, restored the caller's
+interrupt flag, and threw — closing the heartbeat while the tool could still
+be running, so its claim could expire underneath it and a takeover could
+invoke the task concurrently (the Finding 7 failure shape, via a different
+door). **Resolution:** a caller interruption is now *absorbed* — the tool's
+interruption is requested and observation continues with the heartbeat alive
+for exactly as long as the invocation may be running. The interrupt throw
+clears the caller's flag; the status is restored only after the invocation
+has ended **and its outcome has been recorded**. That ordering matters and
+was proven in CI, not just argued: restoring the flag before the outcome
+writes let a contended JDBC connection pool (Hikari waits are interruptible)
+fail the completion write itself, so restoration is deferred to
+`executeTask`'s finally, after success/failure bookkeeping. Restoring the
+flag makes the engine stop its walk after the current task — the run stays
+RUNNING and resumable, which is the designed response to an interrupt.
+
+**Finding 9 — a queued invocation could start after claim loss.** The old
+nested `ToolRun` tracked only a runner thread reference: a cancellation
+requested while the invocation sat in the queue did nothing, and startup vs
+interruption was a check-then-act race. **Resolution:** `ToolRun` is now its
+own class whose queued/running/cancelled lifecycle is coordinated under one
+lock. If cancellation wins before start, `call()` throws `NotStartedException`
+and the tool is NEVER invoked. If start wins, the runner thread is published
+inside the same critical section, so a later interruption request reliably
+reaches it. The runner reference is cleared under the lock at completion, so
+a pooled thread can never be interrupted on behalf of an invocation it has
+already left. The heartbeat now also starts *before* submission, so queued
+invocations are renewed while they wait and rejected submissions close the
+heartbeat with nothing running.
+
+**Heartbeat infrastructure bound (reviewer-requested inspection).** The
+heartbeat scheduler was a single thread: one blocked database renewal
+stalled renewals for every other active task. It is now a bounded parallel
+pool (4 threads). Renewal statements additionally carry a JDBC query timeout
+of one renewal interval (lease/3, minimum 1s): a hung renewal — a locked row,
+a stalled database — fails bounded as a transient error and retries on
+schedule instead of occupying a heartbeat thread and a pooled connection
+indefinitely; a hanging database call is never silently treated as a quick
+transient. Renewals share the application's connection pool with everything
+else by design: each renewal is a single-row UPDATE, and the concrete safe
+bound is that the pool must supply a connection and the database must answer
+within roughly one renewal interval per attempt, with three attempts per
+lease window. (The integration suite runs against a pool of size 1 and
+passes, which exercises exactly this contention.) A renewal-path outage
+longer than the lease remains the documented residual case from Finding 7.
+
+Covered by `AgentPlanLifecycleTest` additions: caller interruption with an
+interruption-ignoring tool (heartbeat held past a full lease, exactly one
+outcome, interrupt status restored, walk stopped and run settled by a later
+execute); claim loss while queued and interruption while queued (the tool is
+never invoked in either case); `ToolRun` unit tests (cancel-before-start,
+interrupt-reaches-runner, a 100-round startup/interruption race hammer
+asserting exactly one of the two legal outcomes per round); a blocked
+heartbeat not stalling others on the production scheduler; and a renewal
+freed by its query timeout while its row is locked by another transaction.
