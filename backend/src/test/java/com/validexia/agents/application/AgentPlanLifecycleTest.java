@@ -14,6 +14,8 @@ import com.validexia.agents.infrastructure.AgentsRepository.PlanTask;
 import com.validexia.audit.AuditService;
 import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -24,6 +26,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -762,5 +765,438 @@ class AgentPlanLifecycleTest {
     } finally {
       pool.shutdownNow();
     }
+  }
+
+  /**
+   * Finding 8: interrupting the ENGINE thread must not abandon the invocation. The old handler
+   * restored the flag and threw at once, closing the heartbeat while the tool kept running — its
+   * claim could then expire and a takeover could invoke the same task concurrently. Now the engine
+   * requests the tool's interruption, keeps observing with the heartbeat alive, and restores the
+   * caller's interrupt status only after the invocation has actually ended.
+   */
+  @Test
+  void callerInterruptionKeepsTheHeartbeatAndRestoresTheFlag() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.caller-interrupt");
+    IgnoringTool tool = new IgnoringTool();
+    AgentEngine engine =
+        new AgentEngine(
+            repository,
+            new AgentRegistry(
+                List.of(
+                    immediatePlanner(
+                        "test.caller-interrupt",
+                        List.of(new AgentPlanner.PlannedTask("test.ignoring", "{}"))))),
+            new ToolRegistry(List.of(tool)),
+            audit,
+            6,
+            3,
+            4,
+            16);
+
+    AtomicReference<AgentData.Run> result = new AtomicReference<>();
+    AtomicBoolean restored = new AtomicBoolean();
+    CountDownLatch done = new CountDownLatch(1);
+    Thread engineThread =
+        new Thread(
+            () -> {
+              try {
+                result.set(
+                    engine.createAndStart(
+                        tenantId,
+                        userId,
+                        "test.caller-interrupt",
+                        "obj",
+                        RunMode.AUTONOMOUS,
+                        "caller-key",
+                        "{}"));
+              } finally {
+                restored.set(Thread.currentThread().isInterrupted());
+                done.countDown();
+              }
+            });
+    engineThread.start();
+    assertTrue(tool.entered.await(15, TimeUnit.SECONDS), "the tool started");
+    engineThread.interrupt();
+    assertTrue(
+        tool.interruptIgnored.await(15, TimeUnit.SECONDS),
+        "the engine requested the tool's interruption — and the tool ignored it");
+
+    // Beyond a full lease duration, the engine thread must STILL be observing (heartbeat
+    // alive), the task still RUNNING, and no second executor able to invoke the tool.
+    Thread.sleep(7000);
+    assertEquals(1L, done.getCount(), "the engine thread must not abandon a running invocation");
+    UUID runId = repository.listRuns(tenantId, userId).get(0).id();
+    assertEquals("RUNNING", repository.listTasks(tenantId, userId, runId).get(0).state());
+    AgentData.Run second = engine.execute(tenantId, userId, runId);
+    assertEquals("RUNNING", second.state());
+    assertEquals(1, tool.entries.get());
+
+    tool.release.countDown();
+    assertTrue(done.await(15, TimeUnit.SECONDS));
+    assertEquals("SUCCEEDED", result.get().state());
+    assertTrue(restored.get(), "the caller's interrupt status is restored after the invocation");
+    assertEquals(1, tool.entries.get());
+    UUID taskId = repository.listTasks(tenantId, userId, runId).get(0).id();
+    assertEquals(1, auditCount(tenantId, "AGENT_TASK_EXECUTED", taskId));
+  }
+
+  /** An engine with one tool thread: the first run occupies it, the second invocation queues. */
+  private AgentEngine queuedEngine(
+      IgnoringTool blocking, CountingTool counting, int leaseSeconds, int budgetSeconds) {
+    return new AgentEngine(
+        repository,
+        new AgentRegistry(
+            List.of(
+                immediatePlanner(
+                    "test.q-block", List.of(new AgentPlanner.PlannedTask("test.ignoring", "{}"))),
+                immediatePlanner(
+                    "test.q-count", List.of(new AgentPlanner.PlannedTask("test.count", "{}"))))),
+        new ToolRegistry(List.of(blocking, counting)),
+        audit,
+        leaseSeconds,
+        budgetSeconds,
+        1,
+        4);
+  }
+
+  /** Polls until the given run's only task is claimed (RUNNING) or the deadline passes. */
+  private void awaitTaskRunning(UUID tenantId, UUID userId, UUID runId) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+    while (System.nanoTime() < deadline) {
+      List<AgentTaskRow> tasks = repository.listTasks(tenantId, userId, runId);
+      if (!tasks.isEmpty() && "RUNNING".equals(tasks.get(0).state())) {
+        return;
+      }
+      Thread.sleep(50);
+    }
+    throw new AssertionError("task of run " + runId + " never became RUNNING");
+  }
+
+  private UUID runIdOf(UUID tenantId, UUID userId, String agentKey) {
+    return repository.listRuns(tenantId, userId).stream()
+        .filter(run -> agentKey.equals(run.agentKey()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no run for " + agentKey))
+        .id();
+  }
+
+  /**
+   * Finding 9 (claim loss while queued): the second invocation sits in the executor queue when its
+   * claim is lost. When a worker finally picks it up, it must NEVER call the tool — the queued run
+   * observes the cancellation recorded before its start and refuses to execute.
+   */
+  @Test
+  void claimLossWhileQueuedSuppressesTheInvocation() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.q-block");
+    register(tenantId, userId, "test.q-count");
+    IgnoringTool blocking = new IgnoringTool();
+    CountingTool counting = new CountingTool();
+    AgentEngine engine = queuedEngine(blocking, counting, 3, 2);
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      Future<AgentData.Run> first =
+          pool.submit(
+              () ->
+                  engine.createAndStart(
+                      tenantId,
+                      userId,
+                      "test.q-block",
+                      "obj",
+                      RunMode.AUTONOMOUS,
+                      "q-key-1",
+                      "{}"));
+      assertTrue(blocking.entered.await(15, TimeUnit.SECONDS), "the only tool thread is busy");
+
+      Future<AgentData.Run> second =
+          pool.submit(
+              () ->
+                  engine.createAndStart(
+                      tenantId,
+                      userId,
+                      "test.q-count",
+                      "obj",
+                      RunMode.AUTONOMOUS,
+                      "q-key-2",
+                      "{}"));
+      UUID run2Id = runIdOf(tenantId, userId, "test.q-count");
+      awaitTaskRunning(tenantId, userId, run2Id);
+
+      // The claim is lost while the invocation is still queued (its lease lapses; the next
+      // renewal reports the loss and the engine cancels the queued run before it can start).
+      admin.update(
+          "UPDATE public.agent_tasks SET claim_expires_at = now() - interval '1 minute'"
+              + " WHERE run_id = ?",
+          run2Id);
+      Thread.sleep(3000);
+
+      blocking.release.countDown();
+      assertEquals("SUCCEEDED", first.get(15, TimeUnit.SECONDS).state());
+      assertEquals("FAILED", second.get(15, TimeUnit.SECONDS).state());
+      assertEquals(
+          0, counting.entries.get(), "a claim lost while queued must never invoke the tool");
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  /**
+   * Finding 9 (interruption while queued): the engine thread executing the second run is
+   * interrupted while its invocation waits in the queue. The queued run is cancelled before start,
+   * the tool is never invoked, and the caller's interrupt status is restored afterwards.
+   */
+  @Test
+  void interruptionWhileQueuedSuppressesTheInvocation() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.q-block");
+    register(tenantId, userId, "test.q-count");
+    IgnoringTool blocking = new IgnoringTool();
+    CountingTool counting = new CountingTool();
+    // Long lease: no renewal traffic interferes with the interrupt-status assertion.
+    AgentEngine engine = queuedEngine(blocking, counting, 30, 25);
+
+    ExecutorService pool = Executors.newFixedThreadPool(1);
+    try {
+      Future<AgentData.Run> first =
+          pool.submit(
+              () ->
+                  engine.createAndStart(
+                      tenantId,
+                      userId,
+                      "test.q-block",
+                      "obj",
+                      RunMode.AUTONOMOUS,
+                      "q-key-1",
+                      "{}"));
+      assertTrue(blocking.entered.await(15, TimeUnit.SECONDS), "the only tool thread is busy");
+
+      AtomicReference<AgentData.Run> result = new AtomicReference<>();
+      AtomicBoolean restored = new AtomicBoolean();
+      CountDownLatch done = new CountDownLatch(1);
+      Thread secondThread =
+          new Thread(
+              () -> {
+                try {
+                  result.set(
+                      engine.createAndStart(
+                          tenantId,
+                          userId,
+                          "test.q-count",
+                          "obj",
+                          RunMode.AUTONOMOUS,
+                          "q-key-2",
+                          "{}"));
+                } finally {
+                  restored.set(Thread.currentThread().isInterrupted());
+                  done.countDown();
+                }
+              });
+      secondThread.start();
+      UUID run2Id = runIdOf(tenantId, userId, "test.q-count");
+      awaitTaskRunning(tenantId, userId, run2Id);
+      secondThread.interrupt();
+      Thread.sleep(1000); // the engine thread absorbs the interrupt and cancels the queued run
+
+      blocking.release.countDown();
+      assertTrue(done.await(15, TimeUnit.SECONDS));
+      assertEquals("SUCCEEDED", first.get(15, TimeUnit.SECONDS).state());
+      assertEquals("FAILED", result.get().state());
+      assertEquals(
+          0, counting.entries.get(), "an interruption while queued must never invoke the tool");
+      assertTrue(restored.get(), "the caller's interrupt status is restored afterwards");
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  /** ToolRun unit: cancellation requested before start — the tool is never invoked. */
+  @Test
+  void toolRunCancelledBeforeStartNeverExecutes() {
+    CountingTool tool = new CountingTool();
+    ToolRun run =
+        new ToolRun(
+            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}");
+    run.requestInterrupt();
+    assertThrows(ToolRun.NotStartedException.class, run::call);
+    assertEquals(0, tool.entries.get());
+  }
+
+  /** ToolRun unit: once started, the interruption reaches the actual runner thread. */
+  @Test
+  void toolRunInterruptReachesTheActualRunner() throws Exception {
+    LatchTool tool = new LatchTool();
+    ToolRun run =
+        new ToolRun(
+            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}");
+    Thread thread =
+        new Thread(
+            () -> {
+              try {
+                run.call();
+              } catch (RuntimeException expected) {
+                // The tool surfaces the interruption as a failure; delivery is what matters.
+              }
+            });
+    thread.start();
+    assertTrue(tool.entered.await(15, TimeUnit.SECONDS), "the tool started");
+    run.requestInterrupt();
+    thread.join(TimeUnit.SECONDS.toMillis(10));
+    assertFalse(thread.isAlive(), "the runner thread must receive the interruption");
+  }
+
+  /**
+   * ToolRun unit: the startup/interruption race, hammered. Every iteration must end in exactly one
+   * of two states — cancelled before start (tool never invoked) or started (invoked once) — never
+   * executed-without-being-started, never stuck.
+   */
+  @Test
+  void toolRunStartupRaceKeepsExactlyOneOutcome() throws Exception {
+    for (int i = 0; i < 100; i++) {
+      CountingTool tool = new CountingTool();
+      ToolRun run =
+          new ToolRun(
+              tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}");
+      CountDownLatch gate = new CountDownLatch(1);
+      AtomicReference<Throwable> callError = new AtomicReference<>();
+      Thread caller =
+          new Thread(
+              () -> {
+                try {
+                  gate.await();
+                  run.call();
+                } catch (Throwable t) {
+                  callError.set(t);
+                }
+              });
+      Thread interrupter =
+          new Thread(
+              () -> {
+                try {
+                  gate.await();
+                } catch (InterruptedException e) {
+                  return;
+                }
+                run.requestInterrupt();
+              });
+      caller.start();
+      interrupter.start();
+      gate.countDown();
+      caller.join(TimeUnit.SECONDS.toMillis(10));
+      interrupter.join(TimeUnit.SECONDS.toMillis(10));
+      assertFalse(caller.isAlive(), "iteration " + i + ": call() stuck");
+      if (tool.entries.get() == 0) {
+        assertTrue(
+            callError.get() instanceof ToolRun.NotStartedException,
+            "iteration "
+                + i
+                + ": not invoked ⇒ must be cancelled-before-start, got "
+                + callError.get());
+      } else {
+        assertEquals(1, tool.entries.get(), "iteration " + i + ": invoked at most once");
+      }
+    }
+  }
+
+  /**
+   * The heartbeat scheduler is parallel: one heartbeat stuck inside a blocked renewal must not
+   * stall the renewals of every other active task. (On the old single-thread scheduler this test
+   * fails: B never gets a tick while A is blocked.)
+   */
+  @Test
+  void oneBlockedHeartbeatDoesNotStallTheOthers() throws Exception {
+    ScheduledExecutorService scheduler = AgentEngine.newHeartbeatScheduler();
+    try {
+      CountDownLatch aEntered = new CountDownLatch(1);
+      CountDownLatch releaseA = new CountDownLatch(1);
+      TaskClaimHeartbeat.Renewer blockedRenewer =
+          () -> {
+            aEntered.countDown();
+            try {
+              releaseA.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            return true;
+          };
+      AtomicInteger bCalls = new AtomicInteger();
+      CountDownLatch bThirdCall = new CountDownLatch(1);
+      TaskClaimHeartbeat.Renewer countingRenewer =
+          () -> {
+            if (bCalls.incrementAndGet() >= 3) {
+              bThirdCall.countDown();
+            }
+            return true;
+          };
+      try (TaskClaimHeartbeat a = TaskClaimHeartbeat.start(scheduler, blockedRenewer, 1);
+          TaskClaimHeartbeat b = TaskClaimHeartbeat.start(scheduler, countingRenewer, 1)) {
+        assertTrue(
+            aEntered.await(15, TimeUnit.SECONDS), "heartbeat A is inside its blocked renewal");
+        assertTrue(
+            bThirdCall.await(15, TimeUnit.SECONDS),
+            "heartbeat B kept renewing while A was blocked");
+        releaseA.countDown();
+      }
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /**
+   * A renewal statement blocked on a row lock must be freed by its JDBC query timeout (lease 3 ⇒ 1
+   * second) as a transient error — not hang until the lock goes away.
+   */
+  @Test
+  void renewalIsBoundedByAQueryTimeout() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.lock");
+    UUID runId =
+        repository
+            .createRunWithPlan(
+                tenantId,
+                userId,
+                "test.lock",
+                "obj",
+                "AUTONOMOUS",
+                null,
+                "{}",
+                List.of(new PlanTask("test.count", "READ", "{}")))
+            .runId();
+    AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
+    ClaimOutcome claim = repository.claimTask(tenantId, userId, runId, task.id(), "exec-1", 30);
+    assertTrue(claim.claimed());
+
+    Connection lock = admin.getDataSource().getConnection();
+    try {
+      lock.setAutoCommit(false);
+      try (Statement statement = lock.createStatement()) {
+        statement.execute(
+            "UPDATE public.agent_tasks SET updated_at = now() WHERE id = '" + task.id() + "'");
+      }
+      long startedNanos = System.nanoTime();
+      assertThrows(
+          DataAccessException.class,
+          () ->
+              repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 3));
+      long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+      assertTrue(
+          elapsedMs < 15_000, "the query timeout must free the renewal, took " + elapsedMs + "ms");
+      assertTrue(
+          elapsedMs >= 800, "the renewal should wait for its timeout, took " + elapsedMs + "ms");
+    } finally {
+      lock.rollback();
+      lock.close();
+    }
+    assertTrue(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
   }
 }

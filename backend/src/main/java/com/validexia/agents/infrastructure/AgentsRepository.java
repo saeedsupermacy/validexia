@@ -1,6 +1,8 @@
 package com.validexia.agents.infrastructure;
 
 import com.validexia.platform.tenancy.TenantContext;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -10,6 +12,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -358,22 +361,38 @@ public class AgentsRepository {
    * Renews a live claim's lease (V9), fenced on executor id and attempt. Returns false when the
    * caller no longer owns the claim — a different executor holds it, the attempt moved on, or the
    * lease already expired (an expired claim cannot be resurrected).
+   *
+   * <p>The statement carries a hard query timeout of one renewal interval (lease/3, at least one
+   * second): a renewal that hangs — a locked row, a stalled database — fails bounded as a transient
+   * error instead of occupying its heartbeat thread and connection indefinitely, and the heartbeat
+   * retries on schedule. A hung database call is never silently treated as quick.
    */
   public boolean renewTaskClaim(
       UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, int leaseSeconds) {
+    int queryTimeoutSeconds = Math.max(1, leaseSeconds / 3);
     return inTenant(
         tenantId,
         userId,
         () ->
             Boolean.TRUE.equals(
-                jdbc.queryForObject(
-                    "SELECT public.renew_agent_task_claim(?, ?, ?, ?, ?)",
-                    Boolean.class,
-                    tenantId,
-                    taskId,
-                    executorId,
-                    attempt,
-                    leaseSeconds)));
+                jdbc.execute(
+                    (ConnectionCallback<Boolean>)
+                        connection -> {
+                          try (PreparedStatement statement =
+                              connection.prepareStatement(
+                                  "SELECT public.renew_agent_task_claim(?, ?, ?, ?, ?)")) {
+                            statement.setQueryTimeout(queryTimeoutSeconds);
+                            statement.setObject(1, tenantId);
+                            statement.setObject(2, taskId);
+                            statement.setString(3, executorId);
+                            statement.setInt(4, attempt);
+                            statement.setInt(5, leaseSeconds);
+                            try (ResultSet results = statement.executeQuery()) {
+                              results.next();
+                              return results.getBoolean(1);
+                            }
+                          }
+                        })));
   }
 
   /**

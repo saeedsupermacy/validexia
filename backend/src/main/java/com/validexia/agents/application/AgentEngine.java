@@ -20,7 +20,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -141,13 +140,26 @@ public class AgentEngine {
               return thread;
             },
             new ThreadPoolExecutor.AbortPolicy());
-    this.heartbeatScheduler =
-        Executors.newSingleThreadScheduledExecutor(
-            runnable -> {
-              Thread thread = new Thread(runnable, "agent-claim-heartbeat");
-              thread.setDaemon(true);
-              return thread;
-            });
+    this.heartbeatScheduler = newHeartbeatScheduler();
+  }
+
+  /**
+   * The heartbeat scheduler is a bounded PARALLEL pool, never a single thread: one task's slow or
+   * blocked renewal must not delay renewals for every other active task (PR #3 review). Renewals
+   * are additionally bounded by a JDBC query timeout (see {@code AgentsRepository}), so a hung
+   * renewal occupies its heartbeat thread for at most one renewal interval before failing as a
+   * transient error and retrying on schedule.
+   */
+  private static final int HEARTBEAT_THREADS = 4;
+
+  static ScheduledExecutorService newHeartbeatScheduler() {
+    return Executors.newScheduledThreadPool(
+        HEARTBEAT_THREADS,
+        runnable -> {
+          Thread thread = new Thread(runnable, "agent-claim-heartbeat");
+          thread.setDaemon(true);
+          return thread;
+        });
   }
 
   /**
@@ -456,16 +468,25 @@ public class AgentEngine {
 
   /**
    * Runs one tool invocation on the bounded tool executor, holding the task's claim with a fenced
-   * heartbeat for exactly as long as the invocation is actually running (migration V9).
+   * heartbeat for exactly as long as the invocation may be running (migration V9). The heartbeat
+   * starts BEFORE the submission, so a rejected submission simply closes it with nothing running,
+   * and a queued invocation's claim is renewed while it waits for a thread.
    *
    * <p>The execution budget is soft: when it expires — or the heartbeat reports the claim lost —
-   * the engine interrupts the tool's own thread directly (never via {@code Future.cancel}, which
-   * cannot stop a thread and would also destroy our ability to observe the invocation's real
-   * outcome) and then keeps waiting until the invocation has actually ended. An outcome is recorded
-   * only for an invocation that has ended; an operation that may still be running is never reported
-   * as failed-and-released. If the invocation never ends, this method never returns: the task stays
-   * RUNNING under its heartbeat-held claim, visible as exactly what it is — still running — and no
-   * takeover can start a second copy.
+   * the engine requests interruption via {@link ToolRun} (never {@code Future.cancel}, which cannot
+   * stop a thread and would destroy our ability to observe the real outcome) and then keeps waiting
+   * until the invocation has actually ended. An outcome is recorded only for an invocation that has
+   * ended; an operation that may still be running is never reported as failed-and- released. If the
+   * invocation never ends, this method never returns: the task stays RUNNING under its
+   * heartbeat-held claim, visible as exactly what it is — still running — and no takeover can start
+   * a second copy.
+   *
+   * <p>Interruption of the CALLER (this engine thread) is absorbed the same way (Finding 8): the
+   * tool's interruption is requested, the caller's interrupt status is remembered — deliberately
+   * NOT restored yet, or every subsequent wait would throw immediately — and observing continues
+   * with the heartbeat alive. The caller's interrupt status is restored only after the invocation
+   * has actually ended, in the finally below; the heartbeat closes only as this method leaves,
+   * which is always after the invocation's end (or before its start, on saturation).
    *
    * <p>The one immediate failure is saturation: if the bounded executor rejects the submission, the
    * invocation never started, so failing the task at once is safe and truthful.
@@ -481,13 +502,7 @@ public class AgentEngine {
     ToolInvocation invocation =
         new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt);
     ToolRun call = new ToolRun(tool, invocation, task.inputJson());
-    Future<String> future;
-    try {
-      future = toolExecutor.submit(call);
-    } catch (RejectedExecutionException e) {
-      throw new IllegalStateException(
-          "Tool execution capacity exhausted; invocation of " + tool.key() + " was not started");
-    }
+    boolean callerInterrupted = false;
     try (TaskClaimHeartbeat heartbeat =
         TaskClaimHeartbeat.start(
             heartbeatScheduler,
@@ -495,80 +510,67 @@ public class AgentEngine {
                 repository.renewTaskClaim(
                     tenantId, userId, task.id(), executorId, attempt, leaseSeconds),
             Math.max(1, leaseSeconds / 3))) {
+      Future<String> future;
+      try {
+        future = toolExecutor.submit(call);
+      } catch (RejectedExecutionException e) {
+        throw new IllegalStateException(
+            "Tool execution capacity exhausted; invocation of " + tool.key() + " was not started");
+      }
       boolean interruptRequested = false;
       boolean timedOut = false;
       long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(executionBudgetSeconds);
-      while (true) {
-        try {
-          return future.get(200, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException slice) {
-          if (!interruptRequested && heartbeat.claimLost()) {
-            call.requestInterrupt();
-            interruptRequested = true;
-          } else if (!interruptRequested && System.nanoTime() >= deadlineNanos) {
-            timedOut = true;
-            call.requestInterrupt();
-            interruptRequested = true;
+      try {
+        while (true) {
+          try {
+            return future.get(200, TimeUnit.MILLISECONDS);
+          } catch (TimeoutException slice) {
+            if (!interruptRequested && heartbeat.claimLost()) {
+              call.requestInterrupt();
+              interruptRequested = true;
+            } else if (!interruptRequested && System.nanoTime() >= deadlineNanos) {
+              timedOut = true;
+              call.requestInterrupt();
+              interruptRequested = true;
+            }
+            // Otherwise keep waiting: a possibly-running invocation is never abandoned.
+          } catch (InterruptedException e) {
+            // The caller was interrupted, not the invocation. Request the tool's interruption
+            // and keep observing: abandoning the wait here would close the heartbeat and let
+            // the claim expire underneath a tool that may still be running. The interrupt
+            // throw cleared the caller's flag; it is restored in the finally, after the
+            // invocation has actually ended.
+            callerInterrupted = true;
+            if (!interruptRequested) {
+              call.requestInterrupt();
+              interruptRequested = true;
+            }
+          } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (timedOut) {
+              String causeMessage =
+                  cause == null || cause.getMessage() == null
+                      ? String.valueOf(cause)
+                      : cause.getMessage();
+              throw new IllegalStateException(
+                  "Tool "
+                      + tool.key()
+                      + " timed out after "
+                      + executionBudgetSeconds
+                      + "s (interruption requested; the invocation has ended): "
+                      + causeMessage,
+                  cause);
+            }
+            if (cause instanceof RuntimeException runtime) {
+              throw runtime;
+            }
+            throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
           }
-          // Otherwise keep waiting: a possibly-running invocation is never abandoned.
-        } catch (InterruptedException e) {
-          call.requestInterrupt();
-          Thread.currentThread().interrupt();
-          throw new IllegalStateException("Interrupted while executing tool " + tool.key());
-        } catch (ExecutionException e) {
-          Throwable cause = e.getCause();
-          if (timedOut) {
-            String causeMessage =
-                cause == null || cause.getMessage() == null
-                    ? String.valueOf(cause)
-                    : cause.getMessage();
-            throw new IllegalStateException(
-                "Tool "
-                    + tool.key()
-                    + " timed out after "
-                    + executionBudgetSeconds
-                    + "s (interruption requested; the invocation has ended): "
-                    + causeMessage,
-                cause);
-          }
-          if (cause instanceof RuntimeException runtime) {
-            throw runtime;
-          }
-          throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
         }
-      }
-    }
-  }
-
-  /**
-   * One tool invocation, tracked by the thread actually running it so the engine can interrupt that
-   * thread directly. ({@code Future.cancel(true)} is deliberately not used for interruption: it
-   * cannot stop an uncooperative thread, and cancelling the future would make the invocation's real
-   * outcome unobservable.)
-   */
-  private static final class ToolRun implements Callable<String> {
-    private final ToolHandler tool;
-    private final ToolInvocation invocation;
-    private final String inputJson;
-    private volatile @Nullable Thread runner;
-
-    ToolRun(ToolHandler tool, ToolInvocation invocation, String inputJson) {
-      this.tool = tool;
-      this.invocation = invocation;
-      this.inputJson = inputJson;
-    }
-
-    @Override
-    public String call() {
-      runner = Thread.currentThread();
-      return tool.execute(invocation, inputJson);
-    }
-
-    /** Requests interruption of the running thread, if the invocation has started. */
-    void requestInterrupt() {
-      Thread thread = runner;
-      if (thread != null) {
-        thread.interrupt();
+      } finally {
+        if (callerInterrupted) {
+          Thread.currentThread().interrupt();
+        }
       }
     }
   }
