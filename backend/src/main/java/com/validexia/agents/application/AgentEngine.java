@@ -251,6 +251,7 @@ public class AgentEngine {
           tenantId, userId, runId, RunState.PENDING.name(), RunState.RUNNING.name(), null, null)) {
         return requireRunRow(tenantId, userId, runId);
       }
+      run = requireRunRow(tenantId, userId, runId);
     } else if (state == RunState.WAITING_APPROVAL) {
       boolean stillWaiting =
           repository.listTasks(tenantId, userId, runId).stream()
@@ -268,6 +269,7 @@ public class AgentEngine {
           null)) {
         return requireRunRow(tenantId, userId, runId);
       }
+      run = requireRunRow(tenantId, userId, runId);
     }
     // A RUNNING run may be entered freely: every task is claimed under a lease before it is
     // touched, so concurrent executors divide the work instead of duplicating it.
@@ -310,7 +312,12 @@ public class AgentEngine {
         }
       }
       if (Thread.currentThread().isInterrupted()) {
-        return requireRunRow(tenantId, userId, runId);
+        // Stop the walk on the restored interrupt — and return the row already in hand rather
+        // than re-reading it: after restoration this thread must do no further interruptible
+        // infrastructure work (a contended connection pool can refuse acquisition to a thread
+        // whose interrupt flag is set). The row's state may be one step behind the task just
+        // settled, which is exactly what "walk stopped, run resumable" means anyway.
+        return run;
       }
     }
 

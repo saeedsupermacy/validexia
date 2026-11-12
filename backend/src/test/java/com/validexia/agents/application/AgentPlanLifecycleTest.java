@@ -16,6 +16,7 @@ import com.validexia.audit.AuditService;
 import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
 import java.sql.Connection;
+import java.sql.SQLTransientConnectionException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +38,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 /**
  * Plan-initialization lifecycle (migration V8): a run and its plan commit atomically, plan
@@ -1304,11 +1306,17 @@ class AgentPlanLifecycleTest {
     Connection held = dataSource.getConnection(); // the test pool's only connection
     try {
       long startedNanos = System.nanoTime();
-      assertThrows(
-          DataAccessException.class,
-          () ->
-              repository.renewTaskClaim(
-                  tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+      // The failure surfaces at transaction begin: the pool refuses acquisition with a
+      // SQLTransientConnectionException once its 5s timeout lapses.
+      CannotCreateTransactionException thrown =
+          assertThrows(
+              CannotCreateTransactionException.class,
+              () ->
+                  repository.renewTaskClaim(
+                      tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+      assertTrue(
+          thrown.getCause() instanceof SQLTransientConnectionException,
+          "the refusal must be the acquisition timeout, got: " + thrown.getCause());
       long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
       assertTrue(
           elapsedMs < 15_000,
