@@ -5,7 +5,11 @@ services:
     image: postgres:17
     environment:
       POSTGRES_USER: validexia_migrator
-      POSTGRES_PASSWORD: validexia-migrator-dev
+      # Local development ONLY. Reads FLYWAY_PASSWORD from the shell (or a
+      # gitignored .env file in this directory) so the same value can be
+      # handed to the app; the default is a throwaway local-only password,
+      # never a production credential.
+      POSTGRES_PASSWORD: ${FLYWAY_PASSWORD:-validexia-migrator-dev}
       POSTGRES_DB: validexia
     ports:
       - "5432:5432"
