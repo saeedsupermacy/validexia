@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -69,6 +70,7 @@ public class AgentEngine {
   private final int toolTimeoutSeconds;
   private final ExecutorService toolExecutor;
 
+  @Autowired
   public AgentEngine(
       AgentsRepository repository, AgentRegistry agents, ToolRegistry tools, AuditService audit) {
     this(repository, agents, tools, audit, LEASE_SECONDS, TOOL_TIMEOUT_SECONDS);
