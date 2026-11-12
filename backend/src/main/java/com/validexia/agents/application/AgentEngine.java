@@ -18,10 +18,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
@@ -48,32 +55,51 @@ public class AgentEngine {
 
   /**
    * How long a task claim lasts before another executor may treat the owner as dead and take over.
-   * The database validates the range (1..3600 seconds, migration V8).
+   * The database validates the range (1..3600 seconds, migration V8). While a tool invocation is
+   * running, its owner renews the claim well before expiry (migration V9), so the lease of a live
+   * invocation does not lapse: expiry means the owner actually stopped renewing.
    */
   private static final int LEASE_SECONDS = 30;
 
   /**
-   * Hard ceiling on a single tool invocation, enforced by the engine. It sits below the lease with
-   * a 10-second margin: a tool that overruns is interrupted and its task failed while the claim is
-   * still ours, so a timeout can never strand a task in a state where a takeover executor re-runs
-   * it while the original call is still in flight. A tool that cannot finish within this ceiling
-   * must not be registered until lease renewal (heartbeat) exists — see the concurrency audit's
-   * remaining limits.
+   * Soft execution budget for one tool invocation — NOT a termination guarantee. When an invocation
+   * exceeds the budget, the engine requests interruption of the tool's thread and then keeps
+   * waiting until the invocation has actually ended; only then is an outcome recorded. A tool that
+   * ignores interruption keeps running, and its task stays RUNNING under its heartbeat-held claim
+   * rather than being falsely marked FAILED — the engine never treats an operation as terminated
+   * merely because interruption was requested. Hard termination of uncooperative code would require
+   * process isolation, which the engine deliberately does not claim (see the concurrency audit,
+   * Finding 7).
    */
-  private static final int TOOL_TIMEOUT_SECONDS = 20;
+  private static final int EXECUTION_BUDGET_SECONDS = 20;
+
+  /** Bounded tool-execution capacity: at most this many invocations run at once... */
+  private static final int TOOL_THREADS = 4;
+
+  /** ...and at most this many more wait for a thread. Beyond that, submissions are rejected. */
+  private static final int TOOL_QUEUE_CAPACITY = 16;
 
   private final AgentsRepository repository;
   private final AgentRegistry agents;
   private final ToolRegistry tools;
   private final AuditService audit;
   private final int leaseSeconds;
-  private final int toolTimeoutSeconds;
+  private final int executionBudgetSeconds;
   private final ExecutorService toolExecutor;
+  private final ScheduledExecutorService heartbeatScheduler;
 
   @Autowired
   public AgentEngine(
       AgentsRepository repository, AgentRegistry agents, ToolRegistry tools, AuditService audit) {
-    this(repository, agents, tools, audit, LEASE_SECONDS, TOOL_TIMEOUT_SECONDS);
+    this(
+        repository,
+        agents,
+        tools,
+        audit,
+        LEASE_SECONDS,
+        EXECUTION_BUDGET_SECONDS,
+        TOOL_THREADS,
+        TOOL_QUEUE_CAPACITY);
   }
 
   AgentEngine(
@@ -82,21 +108,43 @@ public class AgentEngine {
       ToolRegistry tools,
       AuditService audit,
       int leaseSeconds,
-      int toolTimeoutSeconds) {
-    if (leaseSeconds < 1 || toolTimeoutSeconds < 1 || toolTimeoutSeconds >= leaseSeconds) {
+      int executionBudgetSeconds,
+      int toolThreads,
+      int toolQueueCapacity) {
+    if (leaseSeconds < 1 || executionBudgetSeconds < 1 || executionBudgetSeconds >= leaseSeconds) {
       throw new IllegalArgumentException(
-          "tool timeout must be positive and below the lease duration");
+          "execution budget must be positive and below the lease duration");
+    }
+    if (toolThreads < 1 || toolQueueCapacity < 0) {
+      throw new IllegalArgumentException("tool execution capacity must be positive");
     }
     this.repository = repository;
     this.agents = agents;
     this.tools = tools;
     this.audit = audit;
     this.leaseSeconds = leaseSeconds;
-    this.toolTimeoutSeconds = toolTimeoutSeconds;
+    this.executionBudgetSeconds = executionBudgetSeconds;
+    BlockingQueue<Runnable> queue =
+        toolQueueCapacity == 0
+            ? new SynchronousQueue<>()
+            : new ArrayBlockingQueue<>(toolQueueCapacity);
     this.toolExecutor =
-        Executors.newCachedThreadPool(
+        new ThreadPoolExecutor(
+            toolThreads,
+            toolThreads,
+            0L,
+            TimeUnit.MILLISECONDS,
+            queue,
             runnable -> {
               Thread thread = new Thread(runnable, "agent-tool-invocation");
+              thread.setDaemon(true);
+              return thread;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
+    this.heartbeatScheduler =
+        Executors.newSingleThreadScheduledExecutor(
+            runnable -> {
+              Thread thread = new Thread(runnable, "agent-claim-heartbeat");
               thread.setDaemon(true);
               return thread;
             });
@@ -364,11 +412,7 @@ public class AgentEngine {
     ToolHandler tool = tools.require(task.toolKey());
     String output;
     try {
-      output =
-          invokeTool(
-              tool,
-              new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt),
-              task.inputJson());
+      output = invokeTool(tenantId, userId, run, task, executorId, attempt, tool);
     } catch (RuntimeException e) {
       String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
       if (repository.completeTask(
@@ -411,37 +455,121 @@ public class AgentEngine {
   }
 
   /**
-   * Runs one tool invocation under the engine's timeout (below the task lease, with margin). A tool
-   * that overruns is interrupted and reported as a failure, so its task is settled by the claim
-   * owner while the claim is still valid. A tool that ignores interruption may keep running in the
-   * background, but its late result is discarded — nothing reads the future again — and its
-   * invocation carried the task's stable idempotency key, so a provider-side effect can be
-   * deduplicated or reconciled by key.
+   * Runs one tool invocation on the bounded tool executor, holding the task's claim with a fenced
+   * heartbeat for exactly as long as the invocation is actually running (migration V9).
+   *
+   * <p>The execution budget is soft: when it expires — or the heartbeat reports the claim lost —
+   * the engine interrupts the tool's own thread directly (never via {@code Future.cancel}, which
+   * cannot stop a thread and would also destroy our ability to observe the invocation's real
+   * outcome) and then keeps waiting until the invocation has actually ended. An outcome is recorded
+   * only for an invocation that has ended; an operation that may still be running is never reported
+   * as failed-and-released. If the invocation never ends, this method never returns: the task stays
+   * RUNNING under its heartbeat-held claim, visible as exactly what it is — still running — and no
+   * takeover can start a second copy.
+   *
+   * <p>The one immediate failure is saturation: if the bounded executor rejects the submission, the
+   * invocation never started, so failing the task at once is safe and truthful.
    */
-  private String invokeTool(ToolHandler tool, ToolInvocation invocation, String inputJson) {
-    Future<String> future = toolExecutor.submit(() -> tool.execute(invocation, inputJson));
+  private String invokeTool(
+      UUID tenantId,
+      UUID userId,
+      AgentRunRow run,
+      AgentTaskRow task,
+      String executorId,
+      int attempt,
+      ToolHandler tool) {
+    ToolInvocation invocation =
+        new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt);
+    ToolRun call = new ToolRun(tool, invocation, task.inputJson());
+    Future<String> future;
     try {
-      return future.get(toolTimeoutSeconds, TimeUnit.SECONDS);
-    } catch (TimeoutException e) {
-      future.cancel(true);
+      future = toolExecutor.submit(call);
+    } catch (RejectedExecutionException e) {
       throw new IllegalStateException(
-          "Tool "
-              + tool.key()
-              + " timed out after "
-              + toolTimeoutSeconds
-              + "s (lease "
-              + leaseSeconds
-              + "s)");
-    } catch (InterruptedException e) {
-      future.cancel(true);
-      Thread.currentThread().interrupt();
-      throw new IllegalStateException("Interrupted while executing tool " + tool.key());
-    } catch (ExecutionException e) {
-      Throwable cause = e.getCause();
-      if (cause instanceof RuntimeException runtime) {
-        throw runtime;
+          "Tool execution capacity exhausted; invocation of " + tool.key() + " was not started");
+    }
+    try (TaskClaimHeartbeat heartbeat =
+        TaskClaimHeartbeat.start(
+            heartbeatScheduler,
+            () ->
+                repository.renewTaskClaim(
+                    tenantId, userId, task.id(), executorId, attempt, leaseSeconds),
+            Math.max(1, leaseSeconds / 3))) {
+      boolean interruptRequested = false;
+      boolean timedOut = false;
+      long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(executionBudgetSeconds);
+      while (true) {
+        try {
+          return future.get(200, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException slice) {
+          if (!interruptRequested && heartbeat.claimLost()) {
+            call.requestInterrupt();
+            interruptRequested = true;
+          } else if (!interruptRequested && System.nanoTime() >= deadlineNanos) {
+            timedOut = true;
+            call.requestInterrupt();
+            interruptRequested = true;
+          }
+          // Otherwise keep waiting: a possibly-running invocation is never abandoned.
+        } catch (InterruptedException e) {
+          call.requestInterrupt();
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Interrupted while executing tool " + tool.key());
+        } catch (ExecutionException e) {
+          Throwable cause = e.getCause();
+          if (timedOut) {
+            String causeMessage =
+                cause == null || cause.getMessage() == null
+                    ? String.valueOf(cause)
+                    : cause.getMessage();
+            throw new IllegalStateException(
+                "Tool "
+                    + tool.key()
+                    + " timed out after "
+                    + executionBudgetSeconds
+                    + "s (interruption requested; the invocation has ended): "
+                    + causeMessage,
+                cause);
+          }
+          if (cause instanceof RuntimeException runtime) {
+            throw runtime;
+          }
+          throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
+        }
       }
-      throw new IllegalStateException("Tool " + tool.key() + " failed: " + cause, cause);
+    }
+  }
+
+  /**
+   * One tool invocation, tracked by the thread actually running it so the engine can interrupt that
+   * thread directly. ({@code Future.cancel(true)} is deliberately not used for interruption: it
+   * cannot stop an uncooperative thread, and cancelling the future would make the invocation's real
+   * outcome unobservable.)
+   */
+  private static final class ToolRun implements Callable<String> {
+    private final ToolHandler tool;
+    private final ToolInvocation invocation;
+    private final String inputJson;
+    private volatile @Nullable Thread runner;
+
+    ToolRun(ToolHandler tool, ToolInvocation invocation, String inputJson) {
+      this.tool = tool;
+      this.invocation = invocation;
+      this.inputJson = inputJson;
+    }
+
+    @Override
+    public String call() {
+      runner = Thread.currentThread();
+      return tool.execute(invocation, inputJson);
+    }
+
+    /** Requests interruption of the running thread, if the invocation has started. */
+    void requestInterrupt() {
+      Thread thread = runner;
+      if (thread != null) {
+        thread.interrupt();
+      }
     }
   }
 

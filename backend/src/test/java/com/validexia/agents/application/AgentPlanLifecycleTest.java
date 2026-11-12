@@ -1,6 +1,7 @@
 package com.validexia.agents.application;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,6 +9,7 @@ import com.validexia.agents.domain.RiskClass;
 import com.validexia.agents.domain.RunMode;
 import com.validexia.agents.infrastructure.AgentsRepository;
 import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
+import com.validexia.agents.infrastructure.AgentsRepository.ClaimOutcome;
 import com.validexia.agents.infrastructure.AgentsRepository.PlanTask;
 import com.validexia.audit.AuditService;
 import com.validexia.support.TestClerkConfig;
@@ -18,6 +20,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -103,6 +106,70 @@ class AgentPlanLifecycleTest {
         interrupted.countDown();
         Thread.currentThread().interrupt();
         throw new RuntimeException("interrupted", e);
+      }
+      return "{}";
+    }
+  }
+
+  /** A tool that deliberately swallows interrupts and keeps running until released. */
+  static final class IgnoringTool implements ToolHandler {
+    final AtomicInteger entries = new AtomicInteger();
+    final CountDownLatch entered = new CountDownLatch(1);
+    final CountDownLatch interruptIgnored = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+
+    @Override
+    public String key() {
+      return "test.ignoring";
+    }
+
+    @Override
+    public RiskClass riskClass() {
+      return RiskClass.READ;
+    }
+
+    @Override
+    public String execute(String inputJson) {
+      entries.incrementAndGet();
+      entered.countDown();
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+      while (release.getCount() > 0 && System.nanoTime() < deadline) {
+        try {
+          release.await(200, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+          // Deliberately swallowed: this tool ignores interruption and keeps running.
+          interruptIgnored.countDown();
+        }
+      }
+      return "{\"done\":true}";
+    }
+  }
+
+  /** A tool that blocks until the test releases it. */
+  static final class LatchTool implements ToolHandler {
+    final CountDownLatch entered = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+
+    @Override
+    public String key() {
+      return "test.latch";
+    }
+
+    @Override
+    public RiskClass riskClass() {
+      return RiskClass.READ;
+    }
+
+    @Override
+    public String execute(String inputJson) {
+      entered.countDown();
+      try {
+        if (!release.await(30, TimeUnit.SECONDS)) {
+          throw new IllegalStateException("test latch was never released");
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException(e);
       }
       return "{}";
     }
@@ -404,9 +471,9 @@ class AgentPlanLifecycleTest {
   }
 
   /**
-   * The engine enforces a tool timeout below the lease: a hanging tool is interrupted and its task
-   * failed while the claim is still valid, instead of overrunning the lease and being duplicated by
-   * a takeover.
+   * The execution budget is a request, not a kill: a tool that RESPONDS to interruption ends, and
+   * only then is its task failed — the recorded outcome belongs to an invocation that has actually
+   * ended, settled by the claim owner while its (heartbeat-held) claim is valid.
    */
   @Test
   void toolTimeoutFailsTheTaskWithinTheLease() throws Exception {
@@ -426,7 +493,9 @@ class AgentPlanLifecycleTest {
             new ToolRegistry(List.of(tool)),
             audit,
             3,
-            1);
+            1,
+            4,
+            16);
 
     long startedNanos = System.nanoTime();
     AgentData.Run run =
@@ -443,5 +512,255 @@ class AgentPlanLifecycleTest {
         "task error must name the timeout, got: " + task.error());
     assertTrue(tool.interrupted.await(5, TimeUnit.SECONDS), "the tool thread was interrupted");
     assertEquals(1, auditCount(tenantId, "AGENT_RUN_FAILED", run.id()));
+  }
+
+  /**
+   * Finding 7: a tool that IGNORES interruption keeps running past the execution budget and past
+   * the point where its lease would have expired. The heartbeat holds its claim, so no takeover can
+   * start a second invocation; the task stays honestly RUNNING; and when the tool finally ends, its
+   * real outcome is recorded exactly once.
+   */
+  @Test
+  void aToolThatIgnoresInterruptionIsNeverInvokedTwice() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.ignoring");
+    IgnoringTool tool = new IgnoringTool();
+    AgentEngine engine =
+        new AgentEngine(
+            repository,
+            new AgentRegistry(
+                List.of(
+                    immediatePlanner(
+                        "test.ignoring",
+                        List.of(new AgentPlanner.PlannedTask("test.ignoring", "{}"))))),
+            new ToolRegistry(List.of(tool)),
+            audit,
+            3,
+            1,
+            4,
+            16);
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      Future<AgentData.Run> owner =
+          pool.submit(
+              () ->
+                  engine.createAndStart(
+                      tenantId,
+                      userId,
+                      "test.ignoring",
+                      "obj",
+                      RunMode.AUTONOMOUS,
+                      "ignore-key",
+                      "{}"));
+      assertTrue(tool.entered.await(15, TimeUnit.SECONDS), "the tool started");
+      assertTrue(
+          tool.interruptIgnored.await(15, TimeUnit.SECONDS),
+          "the budget fired, interruption was requested — and ignored");
+      UUID runId = repository.listRuns(tenantId, userId).get(0).id();
+
+      // Let more than a full lease duration pass with the tool still running. Without the
+      // heartbeat the claim would now be expired and takeable.
+      Thread.sleep(5000);
+      AgentTaskRow during = repository.listTasks(tenantId, userId, runId).get(0);
+      assertEquals("RUNNING", during.state());
+
+      // A second executor observes the live claim and cannot invoke the tool again.
+      AgentData.Run second =
+          pool.submit(() -> engine.execute(tenantId, userId, runId)).get(15, TimeUnit.SECONDS);
+      assertEquals("RUNNING", second.state());
+      assertEquals(1, tool.entries.get());
+
+      // When the tool finally ends, its real outcome is recorded — exactly once.
+      tool.release.countDown();
+      AgentData.Run finished = owner.get(15, TimeUnit.SECONDS);
+      assertEquals("SUCCEEDED", finished.state());
+      assertEquals(1, tool.entries.get());
+      UUID taskId = repository.listTasks(tenantId, userId, runId).get(0).id();
+      assertEquals(1, auditCount(tenantId, "AGENT_TASK_EXECUTED", taskId));
+      assertEquals(1, auditCount(tenantId, "AGENT_RUN_SUCCEEDED", runId));
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  /** Renewal is fenced exactly like completion: executor id + attempt, and no resurrection. */
+  @Test
+  void renewalIsFencedByExecutorAndAttempt() {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.renew");
+    UUID runId =
+        repository
+            .createRunWithPlan(
+                tenantId,
+                userId,
+                "test.renew",
+                "obj",
+                "AUTONOMOUS",
+                null,
+                "{}",
+                List.of(new PlanTask("test.count", "READ", "{}")))
+            .runId();
+    AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
+
+    ClaimOutcome claim = repository.claimTask(tenantId, userId, runId, task.id(), "exec-1", 30);
+    assertTrue(claim.claimed());
+    // Neither a different executor nor a different attempt can renew this claim.
+    assertFalse(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-2", claim.attempt(), 30));
+    assertFalse(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt() + 1, 30));
+    // The owner renews.
+    assertTrue(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+
+    // An expired claim cannot be resurrected by its old owner.
+    admin.update(
+        "UPDATE public.agent_tasks SET claim_expires_at = now() - interval '1 minute'"
+            + " WHERE id = ?",
+        task.id());
+    assertFalse(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+
+    // After a takeover the fence has moved: the stale owner stays locked out.
+    ClaimOutcome takeover = repository.claimTask(tenantId, userId, runId, task.id(), "exec-2", 30);
+    assertTrue(takeover.claimed());
+    assertFalse(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+    assertTrue(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-2", takeover.attempt(), 30));
+  }
+
+  /**
+   * When the database is unavailable during renewal, the heartbeat treats the failure as transient:
+   * it keeps retrying and never declares the claim lost on the basis of an error.
+   */
+  @Test
+  void heartbeatTreatsRenewerFailuresAsTransient() throws Exception {
+    ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    try {
+      AtomicInteger calls = new AtomicInteger();
+      CountDownLatch fourthCall = new CountDownLatch(1);
+      TaskClaimHeartbeat.Renewer renewer =
+          () -> {
+            int call = calls.incrementAndGet();
+            if (call >= 4) {
+              fourthCall.countDown();
+            }
+            if (call <= 3) {
+              throw new RuntimeException("database unavailable");
+            }
+            return true;
+          };
+      try (TaskClaimHeartbeat heartbeat = TaskClaimHeartbeat.start(scheduler, renewer, 1)) {
+        assertTrue(
+            fourthCall.await(15, TimeUnit.SECONDS), "the heartbeat kept retrying after failures");
+        assertFalse(heartbeat.claimLost());
+      }
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /** Only an explicit fenced-out renewal (a false) signals claim loss. */
+  @Test
+  void heartbeatSignalsProvenClaimLoss() throws Exception {
+    ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    try {
+      CountDownLatch called = new CountDownLatch(1);
+      TaskClaimHeartbeat.Renewer renewer =
+          () -> {
+            called.countDown();
+            return false;
+          };
+      try (TaskClaimHeartbeat heartbeat = TaskClaimHeartbeat.start(scheduler, renewer, 1)) {
+        assertTrue(called.await(15, TimeUnit.SECONDS));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!heartbeat.claimLost() && System.nanoTime() < deadline) {
+          Thread.sleep(25);
+        }
+        assertTrue(heartbeat.claimLost(), "a fenced-out renewal must signal claim loss");
+      }
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /**
+   * Bounded execution capacity: with the single tool thread busy and no queue, a second invocation
+   * is rejected BEFORE it starts — its task fails with the capacity error and its tool is never
+   * invoked. (Failing a task is only safe here because nothing ran.)
+   */
+  @Test
+  void saturatedToolCapacityRejectsWithoutStartingTheInvocation() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.sat-block");
+    register(tenantId, userId, "test.sat-count");
+    LatchTool blocking = new LatchTool();
+    CountingTool counting = new CountingTool();
+    AgentEngine engine =
+        new AgentEngine(
+            repository,
+            new AgentRegistry(
+                List.of(
+                    immediatePlanner(
+                        "test.sat-block",
+                        List.of(new AgentPlanner.PlannedTask("test.latch", "{}"))),
+                    immediatePlanner(
+                        "test.sat-count",
+                        List.of(new AgentPlanner.PlannedTask("test.count", "{}"))))),
+            new ToolRegistry(List.of(blocking, counting)),
+            audit,
+            30,
+            20,
+            1,
+            0);
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      Future<AgentData.Run> first =
+          pool.submit(
+              () ->
+                  engine.createAndStart(
+                      tenantId,
+                      userId,
+                      "test.sat-block",
+                      "obj",
+                      RunMode.AUTONOMOUS,
+                      "sat-key-1",
+                      "{}"));
+      assertTrue(blocking.entered.await(15, TimeUnit.SECONDS), "the only tool thread is busy");
+
+      AgentData.Run rejected =
+          pool.submit(
+                  () ->
+                      engine.createAndStart(
+                          tenantId,
+                          userId,
+                          "test.sat-count",
+                          "obj",
+                          RunMode.AUTONOMOUS,
+                          "sat-key-2",
+                          "{}"))
+              .get(15, TimeUnit.SECONDS);
+      assertEquals("FAILED", rejected.state());
+      assertEquals(0, counting.entries.get());
+      AgentTaskRow rejectedTask = repository.listTasks(tenantId, userId, rejected.id()).get(0);
+      assertEquals("FAILED", rejectedTask.state());
+      assertTrue(
+          rejectedTask.error() != null && rejectedTask.error().contains("capacity"),
+          "the rejection must name the capacity limit, got: " + rejectedTask.error());
+
+      blocking.release.countDown();
+      assertEquals("SUCCEEDED", first.get(15, TimeUnit.SECONDS).state());
+    } finally {
+      pool.shutdownNow();
+    }
   }
 }

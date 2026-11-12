@@ -24,10 +24,14 @@ import com.validexia.agents.domain.RiskClass;
  *       request may have been accepted), reconcile with the provider — query what the idempotency
  *       key actually did — before any retry. Never blindly repeat an operation whose outcome is
  *       unknown.
- *   <li>Every invocation runs under an engine timeout set below the task lease (currently 20s
- *       against a 30s lease). An invocation that overruns is interrupted and its task failed. A
- *       tool must therefore finish well within the timeout and respond to thread interruption; a
- *       tool that needs longer must not be registered until the engine gains lease renewal.
+ *   <li>Every invocation runs under a soft execution budget (currently 20s). At the budget the
+ *       engine requests interruption of the invocation's thread — a request, never a guarantee: the
+ *       engine records an outcome only once the invocation has actually ended, and while it runs, a
+ *       fenced heartbeat holds the task's claim so no second invocation of the same operation can
+ *       start. A tool that ignores interruption therefore keeps its task visibly RUNNING instead of
+ *       being falsely reported as terminated. Tools must still respond to interruption promptly;
+ *       hard termination of uncooperative code is not provided (it would require process
+ *       isolation).
  * </ul>
  */
 public interface ToolHandler {

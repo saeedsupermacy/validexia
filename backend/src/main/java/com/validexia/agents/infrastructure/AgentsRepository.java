@@ -355,6 +355,28 @@ public class AgentsRepository {
   }
 
   /**
+   * Renews a live claim's lease (V9), fenced on executor id and attempt. Returns false when the
+   * caller no longer owns the claim — a different executor holds it, the attempt moved on, or the
+   * lease already expired (an expired claim cannot be resurrected).
+   */
+  public boolean renewTaskClaim(
+      UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, int leaseSeconds) {
+    return inTenant(
+        tenantId,
+        userId,
+        () ->
+            Boolean.TRUE.equals(
+                jdbc.queryForObject(
+                    "SELECT public.renew_agent_task_claim(?, ?, ?, ?, ?)",
+                    Boolean.class,
+                    tenantId,
+                    taskId,
+                    executorId,
+                    attempt,
+                    leaseSeconds)));
+  }
+
+  /**
    * Fenced completion: only the executor holding the claim (matching executor id and attempt) can
    * move the task to SUCCEEDED or FAILED. Returns false when the claim was lost — the caller must
    * then discard its result and stay silent (no audit event).
