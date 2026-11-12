@@ -17,6 +17,7 @@ import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -60,6 +61,7 @@ class AgentPlanLifecycleTest {
 
   @Autowired AgentsRepository repository;
   @Autowired AuditService audit;
+  @Autowired javax.sql.DataSource dataSource;
 
   private final JdbcTemplate admin = TestDatabase.adminJdbc();
 
@@ -900,12 +902,13 @@ class AgentPlanLifecycleTest {
   }
 
   /**
-   * Finding 9 (claim loss while queued): the second invocation sits in the executor queue when its
-   * claim is lost. When a worker finally picks it up, it must NEVER call the tool — the queued run
-   * observes the cancellation recorded before its start and refuses to execute.
+   * Finding 10 (replacing the Finding 9 queued-claim scenario, which the redesign makes
+   * impossible): a queued assignment holds NO claim. While the only supervisor is busy, the second
+   * run's task stays PENDING — there is no lease to lose and no heartbeat to feed. When a
+   * supervisor picks it up, it claims fresh and invokes the tool exactly once.
    */
   @Test
-  void claimLossWhileQueuedSuppressesTheInvocation() throws Exception {
+  void queuedAssignmentsHoldNoClaimAndExecuteOnceWhenPickedUp() throws Exception {
     UUID[] fixture = tenantAndUser();
     UUID tenantId = fixture[0];
     UUID userId = fixture[1];
@@ -913,7 +916,7 @@ class AgentPlanLifecycleTest {
     register(tenantId, userId, "test.q-count");
     IgnoringTool blocking = new IgnoringTool();
     CountingTool counting = new CountingTool();
-    AgentEngine engine = queuedEngine(blocking, counting, 3, 2);
+    AgentEngine engine = queuedEngine(blocking, counting, 30, 25);
 
     ExecutorService pool = Executors.newFixedThreadPool(2);
     try {
@@ -942,33 +945,35 @@ class AgentPlanLifecycleTest {
                       "q-key-2",
                       "{}"));
       UUID run2Id = runIdOf(tenantId, userId, "test.q-count");
-      awaitTaskRunning(tenantId, userId, run2Id);
 
-      // The claim is lost while the invocation is still queued (its lease lapses; the next
-      // renewal reports the loss and the engine cancels the queued run before it can start).
-      admin.update(
-          "UPDATE public.agent_tasks SET claim_expires_at = now() - interval '1 minute'"
-              + " WHERE run_id = ?",
-          run2Id);
-      Thread.sleep(3000);
+      // For a full window the queued task must remain PENDING — never claimed, never RUNNING.
+      long windowEnd = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1500);
+      while (System.nanoTime() < windowEnd) {
+        assertEquals(
+            "PENDING",
+            repository.listTasks(tenantId, userId, run2Id).get(0).state(),
+            "a queued assignment must hold no claim");
+        Thread.sleep(100);
+      }
 
       blocking.release.countDown();
       assertEquals("SUCCEEDED", first.get(15, TimeUnit.SECONDS).state());
-      assertEquals("FAILED", second.get(15, TimeUnit.SECONDS).state());
+      assertEquals("SUCCEEDED", second.get(15, TimeUnit.SECONDS).state());
       assertEquals(
-          0, counting.entries.get(), "a claim lost while queued must never invoke the tool");
+          1, counting.entries.get(), "picked up later, the task is claimed fresh and runs once");
     } finally {
       pool.shutdownNow();
     }
   }
 
   /**
-   * Finding 9 (interruption while queued): the engine thread executing the second run is
-   * interrupted while its invocation waits in the queue. The queued run is cancelled before start,
-   * the tool is never invoked, and the caller's interrupt status is restored afterwards.
+   * Interrupting the engine thread while its assignment is QUEUED does not cancel the assignment
+   * (Finding 8's philosophy, one stage earlier): the supervisor still claims and executes it
+   * exactly once when a thread frees up; the engine thread observes the outcome, and its interrupt
+   * status is restored afterwards, stopping its walk.
    */
   @Test
-  void interruptionWhileQueuedSuppressesTheInvocation() throws Exception {
+  void interruptionWhileQueuedDoesNotCancelTheAssignment() throws Exception {
     UUID[] fixture = tenantAndUser();
     UUID tenantId = fixture[0];
     UUID userId = fixture[1];
@@ -1017,17 +1022,19 @@ class AgentPlanLifecycleTest {
               });
       secondThread.start();
       UUID run2Id = runIdOf(tenantId, userId, "test.q-count");
-      awaitTaskRunning(tenantId, userId, run2Id);
+      Thread.sleep(500); // the assignment is queued, holding no claim
       secondThread.interrupt();
-      Thread.sleep(1000); // the engine thread absorbs the interrupt and cancels the queued run
+      Thread.sleep(500); // absorbed: the engine thread keeps waiting for the supervisor
 
       blocking.release.countDown();
       assertTrue(done.await(15, TimeUnit.SECONDS));
       assertEquals("SUCCEEDED", first.get(15, TimeUnit.SECONDS).state());
-      assertEquals("FAILED", result.get().state());
-      assertEquals(
-          0, counting.entries.get(), "an interruption while queued must never invoke the tool");
+      assertEquals(1, counting.entries.get(), "the queued assignment still executes exactly once");
+      assertEquals("SUCCEEDED", repository.listTasks(tenantId, userId, run2Id).get(0).state());
       assertTrue(restored.get(), "the caller's interrupt status is restored afterwards");
+      // The restored interrupt stopped the walk before settlement; a later execute settles it.
+      assertEquals("RUNNING", result.get().state());
+      assertEquals("SUCCEEDED", engine.execute(tenantId, userId, run2Id).state());
     } finally {
       pool.shutdownNow();
     }
@@ -1214,5 +1221,106 @@ class AgentPlanLifecycleTest {
     }
     assertTrue(
         repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+  }
+
+  /**
+   * Finding 10A stress: the maximum number of simultaneous heartbeats the design allows — one per
+   * tool thread (4 in production) — each renewing at near-worst-case latency (a renewal taking 60%
+   * of the renewal interval, every time). On the production scheduler every heartbeat must keep
+   * cycling without falling behind or declaring loss. (Serialized on one thread, four 600ms
+   * renewals plus the interval would take 3.4s per round and lag immediately.)
+   */
+  @Test
+  void heartbeatSchedulerServicesTheMaximumClaimsAtNearWorstCaseLatency() throws Exception {
+    ScheduledExecutorService scheduler = AgentEngine.newHeartbeatScheduler();
+    try {
+      int maxClaims = 4; // == production TOOL_THREADS: claims are born only at execution time.
+      List<AtomicInteger> completions = new ArrayList<>();
+      List<TaskClaimHeartbeat> heartbeats = new ArrayList<>();
+      for (int i = 0; i < maxClaims; i++) {
+        AtomicInteger counter = new AtomicInteger();
+        completions.add(counter);
+        heartbeats.add(
+            TaskClaimHeartbeat.start(
+                scheduler,
+                () -> {
+                  try {
+                    Thread.sleep(600);
+                  } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                  }
+                  counter.incrementAndGet();
+                  return true;
+                },
+                1));
+      }
+      try {
+        Thread.sleep(7000);
+        for (int i = 0; i < maxClaims; i++) {
+          assertTrue(
+              completions.get(i).get() >= 3,
+              "heartbeat " + i + " completed only " + completions.get(i).get() + " renewals");
+          assertFalse(heartbeats.get(i).claimLost());
+        }
+      } finally {
+        heartbeats.forEach(TaskClaimHeartbeat::close);
+      }
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /**
+   * Finding 10B: connection ACQUISITION is bounded separately from statement execution. With the
+   * pool exhausted (the test pool has exactly one connection, held here), a renewal must fail
+   * within the documented acquisition bound (the 5s connection-timeout from application.yaml)
+   * rather than blocking for the 30s Hikari default — and the failure is transient: once a
+   * connection is available the same renewal succeeds, the fence untouched. (That a thrown renewal
+   * is treated as transient and never as claim loss is proven at the heartbeat level by {@code
+   * heartbeatTreatsRenewerFailuresAsTransient}.)
+   */
+  @Test
+  void renewalFailsBoundedWhenThePoolIsExhausted() throws Exception {
+    UUID[] fixture = tenantAndUser();
+    UUID tenantId = fixture[0];
+    UUID userId = fixture[1];
+    register(tenantId, userId, "test.pool");
+    UUID runId =
+        repository
+            .createRunWithPlan(
+                tenantId,
+                userId,
+                "test.pool",
+                "obj",
+                "AUTONOMOUS",
+                null,
+                "{}",
+                List.of(new PlanTask("test.count", "READ", "{}")))
+            .runId();
+    AgentTaskRow task = repository.listTasks(tenantId, userId, runId).get(0);
+    ClaimOutcome claim = repository.claimTask(tenantId, userId, runId, task.id(), "exec-1", 30);
+    assertTrue(claim.claimed());
+
+    Connection held = dataSource.getConnection(); // the test pool's only connection
+    try {
+      long startedNanos = System.nanoTime();
+      assertThrows(
+          DataAccessException.class,
+          () ->
+              repository.renewTaskClaim(
+                  tenantId, userId, task.id(), "exec-1", claim.attempt(), 30));
+      long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+      assertTrue(
+          elapsedMs < 15_000,
+          "acquisition must fail within the documented bound, took " + elapsedMs + "ms");
+      assertTrue(
+          elapsedMs >= 3_500,
+          "acquisition should wait for its configured timeout (~5s), took " + elapsedMs + "ms");
+    } finally {
+      held.close();
+    }
+    assertTrue(
+        repository.renewTaskClaim(tenantId, userId, task.id(), "exec-1", claim.attempt(), 30),
+        "once a connection is available the renewal succeeds — the failure was transient");
   }
 }

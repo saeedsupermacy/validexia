@@ -363,13 +363,18 @@ public class AgentsRepository {
    * lease already expired (an expired claim cannot be resurrected).
    *
    * <p>The statement carries a hard query timeout of one renewal interval (lease/3, at least one
-   * second): a renewal that hangs — a locked row, a stalled database — fails bounded as a transient
-   * error instead of occupying its heartbeat thread and connection indefinitely, and the heartbeat
-   * retries on schedule. A hung database call is never silently treated as quick.
+   * second, at most five): a renewal that hangs — a locked row, a stalled database — fails bounded
+   * as a transient error instead of occupying its heartbeat thread and connection indefinitely, and
+   * the heartbeat retries on schedule. A hung database call is never silently treated as quick. The
+   * complete renewal operation is bounded end to end: connection acquisition is capped by the
+   * pool's {@code connection-timeout} (5s, set explicitly in application.yaml — Finding 10), the
+   * statement by this timeout, and with the lease at 30s and renewals every 10s a single renewal's
+   * worst case (~5s acquisition + ~5s statement + commit) still lands twice inside one lease
+   * window.
    */
   public boolean renewTaskClaim(
       UUID tenantId, UUID userId, UUID taskId, String executorId, int attempt, int leaseSeconds) {
-    int queryTimeoutSeconds = Math.max(1, leaseSeconds / 3);
+    int queryTimeoutSeconds = Math.min(5, Math.max(1, leaseSeconds / 3));
     return inTenant(
         tenantId,
         userId,

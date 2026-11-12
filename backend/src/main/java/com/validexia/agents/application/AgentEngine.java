@@ -75,7 +75,11 @@ public class AgentEngine {
   /** Bounded tool-execution capacity: at most this many invocations run at once... */
   private static final int TOOL_THREADS = 4;
 
-  /** ...and at most this many more wait for a thread. Beyond that, submissions are rejected. */
+  /**
+   * ...and at most this many more assignments wait for a supervisor. Queued assignments hold NO
+   * claim (a supervisor claims a task only when it is about to invoke it — Finding 10), so this
+   * queue costs no heartbeats. Beyond it, submissions are rejected before anything is claimed.
+   */
   private static final int TOOL_QUEUE_CAPACITY = 16;
 
   private final AgentsRepository repository;
@@ -84,6 +88,7 @@ public class AgentEngine {
   private final AuditService audit;
   private final int leaseSeconds;
   private final int executionBudgetSeconds;
+  private final ExecutorService supervisorExecutor;
   private final ExecutorService toolExecutor;
   private final ScheduledExecutorService heartbeatScheduler;
 
@@ -127,13 +132,29 @@ public class AgentEngine {
         toolQueueCapacity == 0
             ? new SynchronousQueue<>()
             : new ArrayBlockingQueue<>(toolQueueCapacity);
-    this.toolExecutor =
+    this.supervisorExecutor =
         new ThreadPoolExecutor(
             toolThreads,
             toolThreads,
             0L,
             TimeUnit.MILLISECONDS,
             queue,
+            runnable -> {
+              Thread thread = new Thread(runnable, "agent-invocation-supervisor");
+              thread.setDaemon(true);
+              return thread;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
+    // The tool pool itself never queues: only supervisors submit to it, each supervisor has at
+    // most one invocation outstanding, and there are exactly as many supervisors as tool
+    // threads — every submission is a direct handoff to a waiting thread.
+    this.toolExecutor =
+        new ThreadPoolExecutor(
+            toolThreads,
+            toolThreads,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new SynchronousQueue<>(),
             runnable -> {
               Thread thread = new Thread(runnable, "agent-tool-invocation");
               thread.setDaemon(true);
@@ -145,10 +166,13 @@ public class AgentEngine {
 
   /**
    * The heartbeat scheduler is a bounded PARALLEL pool, never a single thread: one task's slow or
-   * blocked renewal must not delay renewals for every other active task (PR #3 review). Renewals
-   * are additionally bounded by a JDBC query timeout (see {@code AgentsRepository}), so a hung
-   * renewal occupies its heartbeat thread for at most one renewal interval before failing as a
-   * transient error and retrying on schedule.
+   * blocked renewal must not delay renewals for every other active task (PR #3 review). Its size
+   * matches the maximum number of simultaneous claims — one per tool thread, because supervisors
+   * claim tasks only at the moment of execution (Finding 10) — so every live claim's renewal can be
+   * in flight at once, with none queueing behind another. Renewals are additionally bounded end to
+   * end (pool acquisition timeout in application.yaml; JDBC statement timeout in {@code
+   * AgentsRepository}), so a hung renewal occupies its heartbeat thread for at most ~10 seconds
+   * before failing as a transient error and retrying on schedule.
    */
   private static final int HEARTBEAT_THREADS = 4;
 
@@ -339,9 +363,16 @@ public class AgentEngine {
   }
 
   /**
-   * Claims one task under a lease, then executes it or parks it for approval. Returns the run row
-   * when the walk must stop (the task was parked, the run failed, or another executor holds the
-   * work), or {@code null} to continue with the next task.
+   * Advances one task: parks it for approval when the mode gate requires a human, or hands it to
+   * the supervisor stage for execution. Returns the run row when the walk must stop (the task was
+   * parked, the run failed, or another executor holds the work), or {@code null} to continue with
+   * the next task.
+   *
+   * <p>Claims are taken as late as possible (Finding 10). A task that needs approval is claimed
+   * here, so it can be parked under its claim's fence. A task that will be EXECUTED is claimed by
+   * its supervisor thread, only when a tool thread is about to run it: queued assignments hold no
+   * claim and need no heartbeat, so the maximum number of simultaneous claims equals the number of
+   * tool threads — which is exactly what the heartbeat plane is sized for.
    */
   private @Nullable AgentRunRow executeTask(
       UUID tenantId,
@@ -351,38 +382,14 @@ public class AgentEngine {
       AgentTaskRow task,
       Set<UUID> approvedTaskIds,
       String executorId) {
-    ClaimOutcome claim =
-        repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, leaseSeconds);
-    if (!claim.claimed()) {
-      switch (TaskState.valueOf(claim.taskState())) {
-        case WAITING_APPROVAL -> {
-          repository.transitionRun(
-              tenantId,
-              userId,
-              run.id(),
-              RunState.RUNNING.name(),
-              RunState.WAITING_APPROVAL.name(),
-              null,
-              null);
-          return requireRunRow(tenantId, userId, run.id());
-        }
-        case FAILED -> {
-          AgentTaskRow current = reloadTask(tenantId, userId, run.id(), task.id());
-          return failRun(tenantId, userId, run, current.error());
-        }
-        case SUCCEEDED, SKIPPED, CANCELLED -> {
-          return null; // Another executor settled it; move on.
-        }
-        default -> {
-          // RUNNING under another executor's live lease: the work is spoken for. Stop the
-          // walk and report the run as it stands — never execute a second copy.
-          return requireRunRow(tenantId, userId, run.id());
-        }
-      }
-    }
-    int attempt = claim.attempt();
     RiskClass risk = RiskClass.valueOf(task.riskClass());
     if (!approvedTaskIds.contains(task.id()) && ModeGate.requiresApproval(mode, risk)) {
+      ClaimOutcome claim =
+          repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, leaseSeconds);
+      if (!claim.claimed()) {
+        return applyClaimVerdict(tenantId, userId, run, task, claim);
+      }
+      int attempt = claim.attempt();
       UUID approvalId;
       try {
         approvalId =
@@ -423,9 +430,118 @@ public class AgentEngine {
     }
     ToolHandler tool = tools.require(task.toolKey());
     try {
+      Future<InvocationOutcome> assignment;
+      try {
+        assignment =
+            supervisorExecutor.submit(
+                () -> superviseInvocation(tenantId, userId, run, task, executorId, risk, tool));
+      } catch (RejectedExecutionException rejected) {
+        // The bounded assignment queue is full and the task was never claimed — nothing ran.
+        // Claim it only to record the failure truthfully under the fence.
+        String message =
+            "Tool execution capacity exhausted; invocation of " + tool.key() + " was not started";
+        ClaimOutcome claim =
+            repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, leaseSeconds);
+        if (!claim.claimed()) {
+          return applyClaimVerdict(tenantId, userId, run, task, claim);
+        }
+        if (repository.completeTask(
+            tenantId,
+            userId,
+            task.id(),
+            executorId,
+            claim.attempt(),
+            TaskState.FAILED.name(),
+            null,
+            message)) {
+          return failRun(tenantId, userId, run, message);
+        }
+        return requireRunRow(tenantId, userId, run.id());
+      }
+      InvocationOutcome outcome = awaitAssignment(assignment, tool);
+      if (outcome instanceof InvocationOutcome.Succeeded) {
+        return null;
+      }
+      if (outcome instanceof InvocationOutcome.Failed failed) {
+        return failRun(tenantId, userId, run, failed.message());
+      }
+      if (outcome instanceof InvocationOutcome.NotClaimed notClaimed) {
+        return applyClaimVerdict(tenantId, userId, run, task, notClaimed.claim());
+      }
+      // ClaimLost: the invocation ended but its outcome was not ours to record.
+      return requireRunRow(tenantId, userId, run.id());
+    } finally {
+      restoreAbsorbedCallerInterrupt();
+    }
+  }
+
+  /** Applies the verdict of a claim another executor won, exactly as the walk has always done. */
+  private @Nullable AgentRunRow applyClaimVerdict(
+      UUID tenantId, UUID userId, AgentRunRow run, AgentTaskRow task, ClaimOutcome claim) {
+    switch (TaskState.valueOf(claim.taskState())) {
+      case WAITING_APPROVAL -> {
+        repository.transitionRun(
+            tenantId,
+            userId,
+            run.id(),
+            RunState.RUNNING.name(),
+            RunState.WAITING_APPROVAL.name(),
+            null,
+            null);
+        return requireRunRow(tenantId, userId, run.id());
+      }
+      case FAILED -> {
+        AgentTaskRow current = reloadTask(tenantId, userId, run.id(), task.id());
+        return failRun(tenantId, userId, run, current.error());
+      }
+      case SUCCEEDED, SKIPPED, CANCELLED -> {
+        return null; // Another executor settled it; move on.
+      }
+      default -> {
+        // RUNNING under another executor's live lease: the work is spoken for. Stop the
+        // walk and report the run as it stands — never execute a second copy.
+        return requireRunRow(tenantId, userId, run.id());
+      }
+    }
+  }
+
+  /** The outcome of one supervised assignment, reported back to the executing walk. */
+  private sealed interface InvocationOutcome {
+    record Succeeded() implements InvocationOutcome {}
+
+    record Failed(String message) implements InvocationOutcome {}
+
+    /** The invocation ended, but the claim had moved on: its outcome was not ours to record. */
+    record ClaimLost() implements InvocationOutcome {}
+
+    /** The supervisor could not claim the task; the walk applies the claim's verdict. */
+    record NotClaimed(ClaimOutcome claim) implements InvocationOutcome {}
+  }
+
+  /**
+   * Runs on a supervisor thread: claims the task, and — only under that fresh claim — invokes the
+   * tool on a tool thread and records the outcome. Because a claim is born here, at the moment of
+   * execution, the number of live claims (and therefore heartbeats) can never exceed the number of
+   * supervisors, which equals the number of tool threads.
+   */
+  private InvocationOutcome superviseInvocation(
+      UUID tenantId,
+      UUID userId,
+      AgentRunRow run,
+      AgentTaskRow task,
+      String executorId,
+      RiskClass risk,
+      ToolHandler tool) {
+    try {
+      ClaimOutcome claim =
+          repository.claimTask(tenantId, userId, run.id(), task.id(), executorId, leaseSeconds);
+      if (!claim.claimed()) {
+        return new InvocationOutcome.NotClaimed(claim);
+      }
+      int attempt = claim.attempt();
       String output;
       try {
-        output = invokeTool(tenantId, userId, run, task, executorId, attempt, tool);
+        output = invokeOnToolThread(tenantId, userId, run, task, executorId, attempt, tool);
       } catch (RuntimeException e) {
         String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
         if (repository.completeTask(
@@ -437,10 +553,10 @@ public class AgentEngine {
             TaskState.FAILED.name(),
             null,
             message)) {
-          return failRun(tenantId, userId, run, message);
+          return new InvocationOutcome.Failed(message);
         }
         // The claim was lost while the tool ran; its failure is not ours to record.
-        return requireRunRow(tenantId, userId, run.id());
+        return new InvocationOutcome.ClaimLost();
       }
       if (repository.completeTask(
           tenantId,
@@ -458,24 +574,50 @@ public class AgentEngine {
             "agent_task",
             task.id().toString(),
             "{\"tool\":\"" + task.toolKey() + "\",\"riskClass\":\"" + risk.name() + "\"}");
-        return null;
+        return new InvocationOutcome.Succeeded();
       }
       // The claim was lost while the tool ran (lease expired, another executor took over):
       // discard our result silently. The current owner's outcome is the one that counts, and
       // the tool carried the task's stable idempotency key, so a provider-side effect can be
       // deduplicated or reconciled by key.
-      return requireRunRow(tenantId, userId, run.id());
+      return new InvocationOutcome.ClaimLost();
     } finally {
-      restoreAbsorbedCallerInterrupt();
+      // Supervisor threads never consume absorbed interrupts; do not leak the marker into this
+      // pooled thread's next assignment.
+      ABSORBED_CALLER_INTERRUPT.remove();
     }
   }
 
   /**
-   * Set by {@link #invokeTool} when it absorbs an interruption of the engine thread, consumed here:
-   * the caller's interrupt status is restored only after the invocation has ended AND its outcome
-   * has been recorded. Restoring it before the outcome writes is a real failure mode, not a nicety
-   * — interruptible infrastructure (a JDBC connection pool waiting for a free connection, above
-   * all) can fail exactly those writes when the calling thread's interrupt flag is set.
+   * Waits for a supervised assignment. Interruption of this (engine) thread is absorbed exactly as
+   * during the invocation itself: the supervisor owns the claim, the heartbeat and the outcome
+   * recording, and all three continue regardless of this thread — the outcome is still reported
+   * back here, and the interrupt status is restored by executeTask's finally once it is known.
+   */
+  private InvocationOutcome awaitAssignment(
+      Future<InvocationOutcome> assignment, ToolHandler tool) {
+    while (true) {
+      try {
+        return assignment.get(200, TimeUnit.MILLISECONDS);
+      } catch (TimeoutException slice) {
+        // Keep waiting: the supervisor is coordinating the invocation.
+      } catch (InterruptedException e) {
+        ABSORBED_CALLER_INTERRUPT.set(Boolean.TRUE);
+      } catch (ExecutionException e) {
+        Throwable cause = e.getCause();
+        throw new IllegalStateException(
+            "Supervised invocation of " + tool.key() + " failed unexpectedly: " + cause, cause);
+      }
+    }
+  }
+
+  /**
+   * Set by {@link #invokeOnToolThread} and {@link #awaitAssignment} when they absorb an
+   * interruption of the calling thread, consumed here: the caller's interrupt status is restored
+   * only after the invocation has ended AND its outcome has been recorded. Restoring it before the
+   * outcome writes is a real failure mode, not a nicety — interruptible infrastructure (a JDBC
+   * connection pool waiting for a free connection, above all) can fail exactly those writes when
+   * the calling thread's interrupt flag is set.
    */
   private static final ThreadLocal<Boolean> ABSORBED_CALLER_INTERRUPT =
       ThreadLocal.withInitial(() -> Boolean.FALSE);
@@ -513,7 +655,7 @@ public class AgentEngine {
    * <p>The one immediate failure is saturation: if the bounded executor rejects the submission, the
    * invocation never started, so failing the task at once is safe and truthful.
    */
-  private String invokeTool(
+  private String invokeOnToolThread(
       UUID tenantId,
       UUID userId,
       AgentRunRow run,

@@ -5,6 +5,17 @@ spring:
     # The running application ALWAYS connects as the restricted role.
     url: ${DB_URL:jdbc:postgresql://localhost:5432/validexia}
     username: ${DB_USER:validexia_app}
+    hikari:
+      # Pool limits are set explicitly because the agent engine's claim heartbeats depend on
+      # them (concurrency audit, Finding 10). Hikari's default connection-timeout is 30s —
+      # exactly the task lease — which would let a renewal block on connection ACQUISITION for
+      # a whole lease before its statement even starts. At 5s, a renewal's full operation is
+      # bounded: <=5s acquisition + <=5s statement (the repository's own cap) + commit, against
+      # a 30s lease renewed every 10s. Pool size 10 (also the default, pinned deliberately):
+      # simultaneous claim renewals can never exceed the 4 tool threads, leaving the majority
+      # of the pool for request and supervisor traffic.
+      connection-timeout: 5000
+      maximum-pool-size: 10
     password: ${DB_PASSWORD:}
   flyway:
     # Flyway connects as the migrator (object owner), never as the app role.
