@@ -21,7 +21,9 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
  const err = error as { status: number; data?: ApiErrorResponse };
  return {
  status: err.status,
- code: err.data?.error_code || 'HTTP_ERROR',
+ // The real backend's error body is {code, message} (ApiErrorHandler);
+ // error_code is kept for older payloads that used that key.
+ code: err.data?.code || err.data?.error_code || 'HTTP_ERROR',
  message: err.data?.message || `Request failed with status ${err.status}`,
  details: err.data?.details,
  };
