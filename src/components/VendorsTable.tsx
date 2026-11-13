@@ -14,6 +14,7 @@ import { Dialog } from '../shared/ui/Dialog';
 import type { RiskLevel, BusinessCriticality, EvidenceStatus, AssessmentStatus, VendorRecord } from '../data/vendors';
 export type { RiskLevel, BusinessCriticality, EvidenceStatus, AssessmentStatus, VendorRecord };
 import { getVendorsWithStatus, addVendor } from '../data/vendors';
+import { loadVendorPortfolio, createVendorOnApi, apiErrorMessage, type PortfolioSource } from '../features/vendors/service';
 import { recordMaterialChange } from '../data/materialChanges';
 import { showToast } from '../shared/ui/toast';
 import { auditStore } from '../features/audit/auditStore';
@@ -47,7 +48,40 @@ const DEFAULT_FILTERS: FilterState = {
 export function VendorsTable() {
  const [activeVendorId, setActiveVendorId] = useState<string | null>(null);
  const [isAddVendorOpen, setIsAddVendorOpen] = useState(false);
- const [vendors, setVendors] = useState(() => getVendorsWithStatus());
+ const [vendors, setVendors] = useState<VendorRecord[]>([]);
+ // Portfolio loading: 'live' = real backend records; 'demo' = the API could
+ // not be reached and the fixtures are shown behind a visible banner.
+ const [portfolioPhase, setPortfolioPhase] = useState<'loading' | 'ready'>('loading');
+ const [portfolioSource, setPortfolioSource] = useState<PortfolioSource>('demo');
+ const [portfolioError, setPortfolioError] = useState<string | null>(null);
+ const [tenantName, setTenantName] = useState<string | null>(null);
+ const isLive = portfolioPhase === 'ready' && portfolioSource === 'live';
+ const vendorsRef = useRef<VendorRecord[]>([]);
+ useEffect(() => { vendorsRef.current = vendors; }, [vendors]);
+
+ const reloadPortfolio = async () => {
+ setPortfolioPhase('loading');
+ const result = await loadVendorPortfolio();
+ setVendors(result.vendors);
+ setPortfolioSource(result.source);
+ setPortfolioError(result.error ?? null);
+ setTenantName(result.tenant?.tenantName ?? null);
+ setPortfolioPhase('ready');
+ };
+
+ useEffect(() => {
+ let cancelled = false;
+ (async () => {
+ const result = await loadVendorPortfolio();
+ if (cancelled) return;
+ setVendors(result.vendors);
+ setPortfolioSource(result.source);
+ setPortfolioError(result.error ?? null);
+ setTenantName(result.tenant?.tenantName ?? null);
+ setPortfolioPhase('ready');
+ })();
+ return () => { cancelled = true; };
+ }, []);
  // Row id of a vendor added moments ago — scroll to + highlight it.
  const [justAddedId, setJustAddedId] = useState<string | null>(null);
  // Form state for the Add Vendor modal
@@ -56,6 +90,19 @@ export function VendorsTable() {
  const [newVendorOwner, setNewVendorOwner] = useState('');
  const [newVendorWebsite, setNewVendorWebsite] = useState('');
  const [newVendorDesc, setNewVendorDesc] = useState('');
+ // Real-API fields (live mode): the backend requires a unique code and
+ // accepts the identity fields below; owner is a user UUID, not a name.
+ const [newVendorCode, setNewVendorCode] = useState('');
+ const [newVendorLegalName, setNewVendorLegalName] = useState('');
+ const [newVendorLei, setNewVendorLei] = useState('');
+ const [newVendorJurisdiction, setNewVendorJurisdiction] = useState('');
+ const [newVendorCategory, setNewVendorCategory] = useState('');
+ const [newVendorDomain, setNewVendorDomain] = useState('');
+ const [newVendorContractStart, setNewVendorContractStart] = useState('');
+ const [newVendorContractEnd, setNewVendorContractEnd] = useState('');
+ const [newVendorTieringComplete, setNewVendorTieringComplete] = useState(false);
+ const [addFormError, setAddFormError] = useState<string | null>(null);
+ const [isAddingVendor, setIsAddingVendor] = useState(false);
  const [tierDataAccess, setTierDataAccess] = useState('');
  const [tierCriticality, setTierCriticality] = useState('');
  const suggestedTier = (() => {
@@ -69,11 +116,16 @@ export function VendorsTable() {
  const handleExportAudit = () => {
  const headers = ['ID', 'Code', 'Vendor Name', 'Status', 'Criticality', 'Risk Level', 'Risk Score', 'Inherent Risk', 'Residual Risk', 'Evidence Status', 'Assessment Status', 'Open Issues', 'Owner', 'Website', 'Description', 'Contract Start', 'Contract End', 'Monitoring Status', 'Last Material Change'];
  const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
- const rows = filteredVendors.map(v => [
- v.id, v.code, q(v.name), v.status, v.criticality, v.riskLevel, v.riskScore, v.inherentRisk ?? '', v.residualRisk ?? '',
- v.evidenceStatus, v.assessmentStatus, v.openIssues, q(v.owner), v.website ?? '', q(v.description ?? ''),
- v.contractStart ?? '', v.contractEnd ?? '', v.monitoringStatus, q(v.lastMaterialChange)
- ]);
+ const rows = filteredVendors.map(v => {
+ // Live API records have no scores/evidence/issues — export the honest
+ // state, never the placeholder values the row type carries.
+ const live = v.source === 'live';
+ return [
+ v.id, v.code, q(v.name), v.status, v.criticality, live ? 'Not assessed' : v.riskLevel, live ? '' : v.riskScore, live ? '' : (v.inherentRisk ?? ''), live ? '' : (v.residualRisk ?? ''),
+ live ? '' : v.evidenceStatus, live ? 'Not assessed' : v.assessmentStatus, live ? '' : v.openIssues, q(v.owner), v.website ?? '', q(v.description ?? ''),
+ v.contractStart ?? '', v.contractEnd ?? '', live ? '' : v.monitoringStatus, live ? '' : q(v.lastMaterialChange)
+ ];
+ });
  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
  const url = URL.createObjectURL(blob);
@@ -86,8 +138,71 @@ export function VendorsTable() {
  URL.revokeObjectURL(url);
  };
 
- const handleAddVendor = () => {
+ const resetAddForm = () => {
+ setNewVendorName('');
+ setNewVendorTier('Tier 2');
+ setNewVendorOwner('');
+ setNewVendorWebsite('');
+ setNewVendorDesc('');
+ setNewVendorCode('');
+ setNewVendorLegalName('');
+ setNewVendorLei('');
+ setNewVendorJurisdiction('');
+ setNewVendorCategory('');
+ setNewVendorDomain('');
+ setNewVendorContractStart('');
+ setNewVendorContractEnd('');
+ setNewVendorTieringComplete(false);
+ setAddFormError(null);
+ setTierDataAccess('');
+ setTierCriticality('');
+ };
+
+ const handleAddVendor = async () => {
  if (!newVendorName.trim()) return;
+ if (isLive) {
+ // Real API create. The backend's validation messages are accurate and
+ // are surfaced verbatim in the form.
+ if (!newVendorCode.trim()) { setAddFormError('code is required'); return; }
+ const ownerRaw = newVendorOwner.trim();
+ if (ownerRaw && !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(ownerRaw)) {
+ setAddFormError('Owner must be a user UUID (or left empty) — the API does not accept display names.');
+ return;
+ }
+ setIsAddingVendor(true);
+ setAddFormError(null);
+ try {
+ const created = await createVendorOnApi({
+ name: newVendorName.trim(),
+ legalName: newVendorLegalName.trim() || null,
+ lei: newVendorLei.trim() || null,
+ jurisdiction: newVendorJurisdiction.trim() || null,
+ code: newVendorCode.trim(),
+ category: newVendorCategory.trim() || null,
+ domain: newVendorDomain.trim() || null,
+ website: newVendorWebsite.trim() || null,
+ description: newVendorDesc.trim() || null,
+ criticality: newVendorTier,
+ ownerUserId: ownerRaw || null,
+ contractStart: newVendorContractStart || null,
+ contractEnd: newVendorContractEnd || null,
+ tieringComplete: newVendorTieringComplete,
+ });
+ auditStore.appendRecord('Current User', 'VENDOR_ADDED', created.name, `Added ${created.criticality} vendor via Vendors tab (live API)`);
+ setFilters(DEFAULT_FILTERS);
+ setDeepLink(null);
+ await reloadPortfolio();
+ setJustAddedId(created.id);
+ showToast(`"${created.name}" added to your portfolio`, 'success');
+ resetAddForm();
+ setIsAddVendorOpen(false);
+ } catch (error) {
+ setAddFormError(apiErrorMessage(error));
+ } finally {
+ setIsAddingVendor(false);
+ }
+ return;
+ }
  const record = addVendor({ name: newVendorName, criticality: newVendorTier, owner: newVendorOwner, website: newVendorWebsite, description: newVendorDesc });
  auditStore.appendRecord('Current User', 'VENDOR_ADDED', newVendorName.trim(), `Added ${newVendorTier} vendor via Vendors tab`);
  recordMaterialChange({
@@ -105,13 +220,7 @@ export function VendorsTable() {
  setVendors(getVendorsWithStatus());
  setJustAddedId(record.id);
  showToast(`"${record.name}" added to your portfolio`, 'success');
- setNewVendorName('');
- setNewVendorTier('Tier 2');
- setNewVendorOwner('');
- setNewVendorWebsite('');
- setNewVendorDesc('');
- setTierDataAccess('');
- setTierCriticality('');
+ resetAddForm();
  setIsAddVendorOpen(false);
  };
 
@@ -130,17 +239,23 @@ export function VendorsTable() {
  const [deepLink, setDeepLink] = useState<{ label: string; highlight: string } | null>(null);
  const [deepLinkSource, setDeepLinkSource] = useState<string>('another tab');
  const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
+ // Vendor detail deep link: applied once the portfolio has loaded, so live
+ // UUIDs resolve against the real list (the detail workspace re-fetches the
+ // record from the API either way).
+ useEffect(() => {
+ if (portfolioPhase !== 'ready') return;
+ const params = getNavParams();
+ if (params.vendorId && typeof params.vendorId === 'string') {
+ const match = vendorsRef.current.find(v => v.id === params.vendorId);
+ if (match || portfolioSource === 'live') {
+ setActiveVendorId(params.vendorId as string);
+ clearNavParams();
+ }
+ }
+ }, [portfolioPhase, portfolioSource]);
+
  useEffect(() => {
  const params = getNavParams();
- // Vendor detail deep link takes precedence — open the detail page by ID (exact match, not name substring)
- if (params.vendorId && typeof params.vendorId === 'string') {
- const match = getVendorsWithStatus().find(v => v.id === params.vendorId);
- if (match) {
- setActiveVendorId(match.id);
- clearNavParams();
- return;
- }
- }
  let changed = false;
  const next: Partial<FilterState> = {};
  const labels: string[] = [];
@@ -214,7 +329,7 @@ export function VendorsTable() {
  const parsed = parseHash();
  if (parsed && parsed.view === 'vendors') {
  const vid = parsed.params.vendorId;
- if (typeof vid === 'string' && vid && getVendorsWithStatus().some(v => v.id === vid)) {
+ if (typeof vid === 'string' && vid && vendorsRef.current.some(v => v.id === vid)) {
  setActiveVendorId(vid);
  } else {
  setActiveVendorId(null);
@@ -290,16 +405,20 @@ export function VendorsTable() {
  vendor.name.toLowerCase().includes(filters.search.toLowerCase()) || 
  vendor.code.toLowerCase().includes(filters.search.toLowerCase()) ||
  vendor.owner.toLowerCase().includes(filters.search.toLowerCase());
- const matchesRisk = filters.riskLevels.length === 0 || filters.riskLevels.includes(vendor.riskLevel);
+ // Live API records have no risk level, evidence or assessment state yet:
+ // score-derived filters simply do not match them (they have no such data),
+ // instead of matching on placeholder values.
+ const isLiveRow = vendor.source === 'live';
+ const matchesRisk = isLiveRow ? filters.riskLevels.length === 0 : (filters.riskLevels.length === 0 || filters.riskLevels.includes(vendor.riskLevel));
  const matchesCriticality = filters.criticalities.length === 0 || filters.criticalities.includes(vendor.criticality);
- const matchesEvidence = filters.evidenceStatuses.length === 0 || filters.evidenceStatuses.includes(vendor.evidenceStatus);
- const matchesAssessment = filters.assessmentStatuses.length === 0 || filters.assessmentStatuses.includes(vendor.assessmentStatus);
+ const matchesEvidence = isLiveRow ? filters.evidenceStatuses.length === 0 : (filters.evidenceStatuses.length === 0 || filters.evidenceStatuses.includes(vendor.evidenceStatus));
+ const matchesAssessment = isLiveRow ? filters.assessmentStatuses.length === 0 : (filters.assessmentStatuses.length === 0 || filters.assessmentStatuses.includes(vendor.assessmentStatus));
  const matchesOwner = filters.owners.length === 0 || filters.owners.includes(vendor.owner);
  const matchesIssues = vendor.openIssues >= filters.minOpenIssues;
  const matchesStatus = filters.statuses.length === 0 || filters.statuses.includes(vendor.status);
  // "Needs attention" uses OR semantics: high/critical risk OR missing evidence.
- const matchesAttention = !filters.needsAttention ||
- (vendor.riskLevel === 'High' || vendor.riskLevel === 'Critical' || vendor.evidenceStatus === 'Missing');
+ const matchesAttention = isLiveRow ? !filters.needsAttention : (!filters.needsAttention ||
+ (vendor.riskLevel === 'High' || vendor.riskLevel === 'Critical' || vendor.evidenceStatus === 'Missing'));
 
  return matchesSearch && matchesRisk && matchesCriticality && matchesEvidence && matchesAssessment && matchesOwner && matchesIssues && matchesStatus && matchesAttention;
  }).sort((a, b) => {
@@ -375,6 +494,36 @@ export function VendorsTable() {
  count={filteredVendors.length}
  onClear={clearDeepLink}
  />
+ )}
+
+ {portfolioPhase === 'loading' && (
+ <div role="status" className="flex items-center gap-2.5 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-text-secondary">
+ <div aria-hidden="true" className="w-4 h-4 border-2 border-accent/25 border-t-accent rounded-full animate-spin"></div>
+ Loading vendors from the Validexia API…
+ </div>
+ )}
+
+ {portfolioPhase === 'ready' && portfolioSource === 'demo' && portfolioError && (
+ <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-status-warning/30 bg-status-warning/10 px-4 py-3">
+ <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-status-warning/15 text-status-warning border border-status-warning/30">Demo data</span>
+ <p className="text-sm text-text-secondary m-0 flex-1 min-w-[220px]">
+ The live API could not be reached ({portfolioError}). You are viewing the built-in demo portfolio — none of these records are real.
+ </p>
+ <Button variant="secondary" size="sm" onClick={reloadPortfolio}>Retry</Button>
+ </div>
+ )}
+
+ {isLive && (
+ <div className="flex items-center gap-2 text-xs text-text-tertiary">
+ <span className="inline-flex items-center gap-1.5 font-semibold text-status-success">
+ <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-status-success"></span>
+ Live data
+ </span>
+ <span aria-hidden="true">•</span>
+ <span>{tenantName ?? 'Your tenant'}</span>
+ <span aria-hidden="true">•</span>
+ <span>Risk scores are not part of these records yet — rows show “Not assessed”.</span>
+ </div>
  )}
 
  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-border pb-6">
@@ -717,7 +866,11 @@ export function VendorsTable() {
  )}
  </div>
  <div className="text-[11px] font-mono text-text-tertiary mt-0.5">
- {vendor.code} • <span className="text-status-success font-semibold">{vendor.monitoringStatus}</span>
+ {vendor.code} • {vendor.source === 'live' ? (
+ <span>{vendor.domain ?? 'API record'}</span>
+ ) : (
+ <span className="text-status-success font-semibold">{vendor.monitoringStatus}</span>
+ )}
  </div>
  </td>
 
@@ -729,7 +882,7 @@ export function VendorsTable() {
 
  <td className="py-3.5 px-4">
  <div className="flex items-center gap-2.5">
- {vendor.assessmentStatus === 'Not Started' ? (
+ {vendor.source === 'live' || vendor.assessmentStatus === 'Not Started' ? (
  <span className="inline-flex justify-center w-[74px] text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-surface text-text-tertiary border border-border">
  <span className="sr-only">Risk Level: </span>Not assessed
  </span>
@@ -745,23 +898,31 @@ export function VendorsTable() {
  </td>
 
  <td className="py-3.5 px-4">
+ {vendor.source === 'live' ? (
+ <span className="text-xs text-text-tertiary">—</span>
+ ) : (
  <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded ${getEvidenceBadge(vendor.evidenceStatus)}`}>
  <span className="sr-only">Status: </span>{vendor.evidenceStatus}
  </span>
+ )}
  </td>
 
  <td className="py-3.5 px-4">
  <span className="text-xs text-text-secondary font-medium">
- {vendor.assessmentStatus}
+ {vendor.source === 'live' ? '—' : vendor.assessmentStatus}
  </span>
  </td>
 
  <td className="py-3.5 px-4">
+ {vendor.source === 'live' ? (
+ <span className="text-xs text-text-tertiary">—</span>
+ ) : (
  <span className={`text-xs font-bold tabular-nums px-2 py-0.5 rounded ${
  vendor.openIssues > 4 ? 'bg-risk-critical/10 text-risk-critical' : vendor.openIssues > 0 ? 'bg-status-warning/10 text-status-warning' : 'text-text-tertiary'
  }`}>
  {vendor.openIssues} <span className="sr-only">active issues</span>{vendor.openIssues > 0 ? ' active' : ''}
  </span>
+ )}
  </td>
 
  <td className="py-3.5 px-4">
@@ -775,7 +936,7 @@ export function VendorsTable() {
 
  <td className="py-3.5 px-5 text-xs text-text-tertiary font-mono tabular-nums">
  <div className="flex items-center justify-between">
- <span>{vendor.lastMaterialChange}</span>
+ <span>{vendor.source === 'live' ? '—' : vendor.lastMaterialChange}</span>
  <button 
  type="button"
  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold text-accent bg-accent-muted hover:bg-accent-muted rounded-md transition-colors opacity-0 group-hover:opacity-100 group-focus:opacity-100 focus:opacity-100 focus:ring-2 focus:ring-accent outline-none "
@@ -799,7 +960,11 @@ export function VendorsTable() {
  ) : (
  <tr>
  <td colSpan={8} className="py-12 text-center text-sm text-text-tertiary">
- No vendors match your active filter criteria.
+ {portfolioPhase === 'loading'
+ ? 'Loading vendors…'
+ : isLive && vendors.length === 0
+ ? 'No vendors in this tenant yet — use “Add Vendor” to register your first one.'
+ : 'No vendors match your active filter criteria.'}
  </td>
  </tr>
  )}
@@ -824,6 +989,38 @@ export function VendorsTable() {
  <label htmlFor="vendor-name" className="block text-xs font-semibold text-text-secondary mb-1.5">Vendor name</label>
  <input id="vendor-name" type="text" value={newVendorName} onChange={(e) => setNewVendorName(e.target.value)} placeholder="e.g. Acme Cloud Services" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
  </div>
+ {isLive && (
+ <>
+ <div>
+ <label htmlFor="vendor-code" className="block text-xs font-semibold text-text-secondary mb-1.5">Vendor code <span className="font-normal text-text-tertiary">(unique in your tenant, required)</span></label>
+ <input id="vendor-code" type="text" value={newVendorCode} onChange={(e) => setNewVendorCode(e.target.value)} placeholder="e.g. VND-101" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ <div className="grid grid-cols-2 gap-3">
+ <div>
+ <label htmlFor="vendor-legal-name" className="block text-xs font-semibold text-text-secondary mb-1.5">Legal name <span className="font-normal text-text-tertiary">(optional)</span></label>
+ <input id="vendor-legal-name" type="text" value={newVendorLegalName} onChange={(e) => setNewVendorLegalName(e.target.value)} placeholder="Registered legal entity" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ <div>
+ <label htmlFor="vendor-jurisdiction" className="block text-xs font-semibold text-text-secondary mb-1.5">Jurisdiction <span className="font-normal text-text-tertiary">(optional)</span></label>
+ <input id="vendor-jurisdiction" type="text" value={newVendorJurisdiction} onChange={(e) => setNewVendorJurisdiction(e.target.value)} placeholder="e.g. Delaware, US" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ </div>
+ <div className="grid grid-cols-2 gap-3">
+ <div>
+ <label htmlFor="vendor-lei" className="block text-xs font-semibold text-text-secondary mb-1.5">LEI <span className="font-normal text-text-tertiary">(optional, 20 characters)</span></label>
+ <input id="vendor-lei" type="text" value={newVendorLei} onChange={(e) => setNewVendorLei(e.target.value)} placeholder="Legal Entity Identifier" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ <div>
+ <label htmlFor="vendor-category" className="block text-xs font-semibold text-text-secondary mb-1.5">Category <span className="font-normal text-text-tertiary">(optional)</span></label>
+ <input id="vendor-category" type="text" value={newVendorCategory} onChange={(e) => setNewVendorCategory(e.target.value)} placeholder="e.g. Cloud & Hosting" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ </div>
+ <div>
+ <label htmlFor="vendor-domain" className="block text-xs font-semibold text-text-secondary mb-1.5">Domain <span className="font-normal text-text-tertiary">(optional)</span></label>
+ <input id="vendor-domain" type="text" value={newVendorDomain} onChange={(e) => setNewVendorDomain(e.target.value)} placeholder="e.g. acmecloud.com" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ </>
+ )}
  <div className="p-3.5 rounded-xl border border-border bg-base space-y-3">
  <p className="text-xs font-semibold text-text-primary m-0">Quick tiering <span className="font-normal text-text-tertiary">— answer 2 questions, we'll suggest a tier</span></p>
  <div>
@@ -857,8 +1054,9 @@ export function VendorsTable() {
  </select>
  </div>
  <div>
- <label htmlFor="vendor-owner" className="block text-xs font-semibold text-text-secondary mb-1.5">Owner</label>
- <input id="vendor-owner" type="text" value={newVendorOwner} onChange={(e) => setNewVendorOwner(e.target.value)} placeholder="e.g. Sarah Jenkins" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ <label htmlFor="vendor-owner" className="block text-xs font-semibold text-text-secondary mb-1.5">{isLive ? 'Owner user ID (optional)' : 'Owner'}</label>
+ <input id="vendor-owner" type="text" value={newVendorOwner} onChange={(e) => setNewVendorOwner(e.target.value)} placeholder={isLive ? 'A tenant member’s user UUID' : 'e.g. Sarah Jenkins'} className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
+ {isLive && <p className="text-[11px] text-text-tertiary mt-1 m-0">The API stores the owner as a user ID and checks tenant membership — display names are not accepted.</p>}
  </div>
  <div>
  <label htmlFor="vendor-website" className="block text-xs font-semibold text-text-secondary mb-1.5">Website</label>
@@ -868,10 +1066,33 @@ export function VendorsTable() {
  <label htmlFor="vendor-desc" className="block text-xs font-semibold text-text-secondary mb-1.5">What do they do? <span className="font-normal text-text-tertiary">(optional)</span></label>
  <input id="vendor-desc" type="text" value={newVendorDesc} onChange={(e) => setNewVendorDesc(e.target.value)} placeholder="e.g. Cloud hosting and CDN services" className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-info" />
  </div>
+ {isLive && (
+ <>
+ <div className="grid grid-cols-2 gap-3">
+ <div>
+ <label htmlFor="vendor-contract-start" className="block text-xs font-semibold text-text-secondary mb-1.5">Contract start <span className="font-normal text-text-tertiary">(optional)</span></label>
+ <input id="vendor-contract-start" type="date" value={newVendorContractStart} onChange={(e) => setNewVendorContractStart(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ <div>
+ <label htmlFor="vendor-contract-end" className="block text-xs font-semibold text-text-secondary mb-1.5">Contract end <span className="font-normal text-text-tertiary">(optional)</span></label>
+ <input id="vendor-contract-end" type="date" value={newVendorContractEnd} onChange={(e) => setNewVendorContractEnd(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-info" />
+ </div>
+ </div>
+ <label className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
+ <input type="checkbox" checked={newVendorTieringComplete} onChange={(e) => setNewVendorTieringComplete(e.target.checked)} className="w-4 h-4 rounded accent-accent" />
+ Tiering questionnaire completed for this vendor
+ </label>
+ </>
+ )}
+ {addFormError && (
+ <div role="alert" className="rounded-lg border border-risk-critical/30 bg-risk-critical/10 px-3 py-2 text-sm text-risk-critical">
+ {addFormError}
+ </div>
+ )}
  </div>
  <div className="flex justify-end gap-2 pt-1">
  <Button variant="secondary" size="sm" onClick={() => setIsAddVendorOpen(false)}>Cancel</Button>
- <Button variant="primary" size="sm" onClick={handleAddVendor} disabled={!newVendorName.trim()}>Add Vendor</Button>
+ <Button variant="primary" size="sm" onClick={handleAddVendor} disabled={!newVendorName.trim() || isAddingVendor}>{isAddingVendor ? 'Adding…' : 'Add Vendor'}</Button>
  </div>
  </div>
  </Dialog>
