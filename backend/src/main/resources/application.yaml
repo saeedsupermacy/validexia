@@ -48,3 +48,14 @@ validexia:
     # disabled (the local sid denylist still applies).
     secret-key: ${CLERK_SECRET_KEY:}
     api-base-url: https://api.clerk.com
+  ai:
+    # Model layer (docs/ai/AI-FOUNDATION-DESIGN.md). Disabled and keyless by default: an
+    # unconfigured deployment fails every model call closed with a clear error — it never
+    # fabricates an answer. The API key comes from the environment ONLY; never commit one.
+    # Enable + key + model must all be set before any live call is attempted.
+    enabled: ${VALIDEXIA_AI_ENABLED:false}
+    provider: ${VALIDEXIA_AI_PROVIDER:anthropic}
+    api-key: ${VALIDEXIA_AI_API_KEY:}
+    model: ${VALIDEXIA_AI_MODEL:}
+    base-url: ${VALIDEXIA_AI_BASE_URL:https://api.anthropic.com}
+    timeout-seconds: ${VALIDEXIA_AI_TIMEOUT_SECONDS:60}
