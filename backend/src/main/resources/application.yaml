@@ -1,6 +1,13 @@
 spring:
   application:
     name: validexia-backend
+  servlet:
+    multipart:
+      # The documents slice accepts PDFs up to validexia.documents.max-file-size-bytes (20 MB by
+      # default). Spring's own 1 MB servlet ceiling would reject them before the storage service's
+      # validation ever runs, so it is raised to match.
+      max-file-size: 25MB
+      max-request-size: 25MB
   datasource:
     # The running application ALWAYS connects as the restricted role.
     url: ${DB_URL:jdbc:postgresql://localhost:5432/validexia}

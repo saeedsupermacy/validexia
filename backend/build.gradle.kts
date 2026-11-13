@@ -38,6 +38,10 @@ dependencies {
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.2.0")
     implementation("com.nimbusds:nimbus-jose-jwt:10.0.2")
 
+    // PDF text extraction for the documents slice (migration V13): one text record per page, so a
+    // citation can be pinned to the page it came from. Apache License 2.0.
+    implementation("org.apache.pdfbox:pdfbox:3.0.8")
+
     "errorprone"("com.google.errorprone:error_prone_core:$errorProneVersion")
     "errorprone"("com.uber.nullaway:nullaway:$nullAwayVersion")
 
