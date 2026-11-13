@@ -19,7 +19,7 @@ Last updated: 2026-11-13. Update this file whenever a milestone lands or a PR me
   the app role has no direct table access, all access via SECURITY DEFINER functions
   with the V6 fail-closed tenant guard, FORCE ROW LEVEL SECURITY on the guarded tables (agent tables, audit events, and each domain slice as it lands; the identity directory tables predate the pattern and have no RLS).
 
-## What is real but NOT yet on main (open PRs, both CI-green, awaiting founder review)
+## What is real but NOT yet on main (open PRs awaiting founder review; #5 and #6 are CI-green)
 
 - **PR #5** (`feat/ai-foundation`, head `47ae3c4`): AI model layer — provider
   abstraction, real Anthropic Messages client (structured output via a forced tool
