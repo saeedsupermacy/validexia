@@ -68,6 +68,7 @@ class AnthropicModelProviderTest {
     assertEquals("2023-06-01", headers.get().get("anthropic-version"));
     JsonNode sent = mapper.readTree(body.get());
     assertEquals("test-model", sent.path("model").asText());
+    assertEquals("tool", sent.path("tool_choice").path("type").asText());
     assertEquals("emit_result", sent.path("tool_choice").path("name").asText());
     JsonNode inputSchema = sent.path("tools").get(0).path("input_schema");
     assertTrue(inputSchema.path("required").toString().contains("verdict"));
@@ -112,7 +113,133 @@ class AnthropicModelProviderTest {
             () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
     assertEquals(ModelProviderException.Kind.PROVIDER_ERROR, thrown.kind());
     assertTrue(thrown.getMessage().contains("429"));
+    assertTrue(thrown.retryable());
     assertFalse(thrown.getMessage().contains("test-key-123"));
+  }
+
+  @Test
+  void permanentClientErrorsAreNotRetryable() {
+    for (int status : new int[] {400, 401, 403, 404}) {
+      AnthropicModelProvider provider =
+          providerReturning(
+              new AtomicReference<>(),
+              new AtomicReference<>(),
+              new AtomicReference<>(),
+              status,
+              "{\"error\":{\"type\":\"some_error\",\"message\":\"nope\"}}");
+      ModelProviderException thrown =
+          assertThrows(
+              ModelProviderException.class,
+              () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
+      assertEquals(ModelProviderException.Kind.PROVIDER_ERROR, thrown.kind());
+      assertFalse(thrown.retryable(), "HTTP " + status + " must not be retryable");
+    }
+  }
+
+  @Test
+  void serverErrorsAreRetryable() {
+    for (int status : new int[] {500, 503}) {
+      AnthropicModelProvider provider =
+          providerReturning(
+              new AtomicReference<>(),
+              new AtomicReference<>(),
+              new AtomicReference<>(),
+              status,
+              "{\"error\":{\"type\":\"api_error\",\"message\":\"boom\"}}");
+      ModelProviderException thrown =
+          assertThrows(
+              ModelProviderException.class,
+              () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
+      assertTrue(thrown.retryable(), "HTTP " + status + " must be retryable");
+    }
+  }
+
+  @Test
+  void anErrorBodyNeverLeaksIntoTheExceptionMessage() {
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            400,
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+                + "\"message\":\"rejected because BODY_MARKER_7f3a was in the prompt\"}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
+    assertTrue(thrown.getMessage().contains("400"));
+    assertTrue(thrown.getMessage().contains("invalid_request_error"));
+    assertFalse(thrown.getMessage().contains("BODY_MARKER_7f3a"));
+  }
+
+  @Test
+  void aNonJsonSuccessBodyMessageCarriesNoBodyContent() {
+    AnthropicModelProvider provider =
+        new AnthropicModelProvider(
+            properties(),
+            mapper,
+            (u, h, b) ->
+                new AnthropicModelProvider.TransportResponse(200, "BODY_MARKER_9e1 not json"));
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
+    assertEquals(ModelProviderException.Kind.PROVIDER_ERROR, thrown.kind());
+    assertFalse(thrown.getMessage().contains("BODY_MARKER_9e1"));
+  }
+
+  @Test
+  void aTransportFailureIsClassifiedRetryable() {
+    AnthropicModelProvider provider =
+        new AnthropicModelProvider(
+            properties(),
+            mapper,
+            (u, h, b) -> {
+              throw new java.io.IOException("connection reset");
+            });
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
+    assertEquals(ModelProviderException.Kind.TRANSPORT, thrown.kind());
+    assertTrue(thrown.retryable());
+  }
+
+  @Test
+  void aTextCallAnsweredWithoutAnyTextFailsWithInvalidOutput() {
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"content\":[],"
+                + "\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> provider.complete(ModelRequest.text("purpose", "sys", "user")));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aTrailingSlashBaseUrlDoesNotDoubleTheSlash() {
+    AtomicReference<String> url = new AtomicReference<>();
+    AnthropicModelProvider provider =
+        new AnthropicModelProvider(
+            new AiProperties(
+                true, "anthropic", "test-key-123", "test-model", "https://api.anthropic.test/", 30),
+            mapper,
+            (u, h, b) -> {
+              url.set(u);
+              return new AnthropicModelProvider.TransportResponse(
+                  200,
+                  "{\"model\":\"test-model\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}");
+            });
+    provider.complete(ModelRequest.text("purpose", "sys", "user"));
+    assertEquals("https://api.anthropic.test/v1/messages", url.get());
   }
 
   @Test

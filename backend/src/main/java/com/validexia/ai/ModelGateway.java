@@ -15,7 +15,16 @@ import org.springframework.stereotype.Service;
  *
  * <p>Retries are deliberately NOT done here: a failed call surfaces to the agent engine, whose task
  * lifecycle (leases, attempts, idempotency keys) owns retry semantics. Retrying silently at this
- * layer would double-charge and double-execute against that accounting.
+ * layer would double-charge and double-execute against that accounting. The contract the engine
+ * retries against is {@link ModelProviderException#retryable()}: it is {@code true} only for
+ * transient failures (rate limiting, provider 5xx, transport errors) where another attempt could
+ * succeed, and {@code false} for permanent ones (authentication, malformed request, unconfigured
+ * deployment, schema-invalid output), which must fail the task instead of burning attempts.
+ *
+ * <p>Usage accounting covers failures too: a call the provider rejects or that fails validation
+ * still consumed provider resources, so the one usage line per call is written for failed calls as
+ * well (with the failure kind and retryable flag instead of token counts) — still never with prompt
+ * or response content.
  */
 @Service
 public class ModelGateway {
@@ -36,28 +45,41 @@ public class ModelGateway {
   public ModelResponse execute(ModelRequest request) {
     ModelProvider provider = selectProvider();
     long started = System.nanoTime();
-    ModelResponse response = provider.complete(request);
-    long latencyMs = (System.nanoTime() - started) / 1_000_000;
-    if (request.schema() != null) {
-      if (response.structured() == null) {
-        throw new ModelProviderException(
-            ModelProviderException.Kind.INVALID_OUTPUT,
-            "provider "
-                + provider.name()
-                + " answered a structured request without a structured result");
+    try {
+      ModelResponse response = provider.complete(request);
+      long latencyMs = (System.nanoTime() - started) / 1_000_000;
+      if (request.schema() != null) {
+        if (response.structured() == null) {
+          throw new ModelProviderException(
+              ModelProviderException.Kind.INVALID_OUTPUT,
+              "provider "
+                  + provider.name()
+                  + " answered a structured request without a structured result");
+        }
+        validator.requireValid(response.structured(), request.schema());
       }
-      validator.requireValid(response.structured(), request.schema());
+      ModelResponse measured = response.withLatency(latencyMs);
+      LOG.info(
+          "model call purpose={} provider={} model={} inputTokens={} outputTokens={} latencyMs={}",
+          request.purpose(),
+          measured.provider(),
+          measured.model(),
+          measured.inputTokens(),
+          measured.outputTokens(),
+          measured.latencyMs());
+      return measured;
+    } catch (ModelProviderException e) {
+      long latencyMs = (System.nanoTime() - started) / 1_000_000;
+      LOG.info(
+          "model call failed purpose={} provider={} model={} kind={} retryable={} latencyMs={}",
+          request.purpose(),
+          provider.name(),
+          provider.model(),
+          e.kind(),
+          e.retryable(),
+          latencyMs);
+      throw e;
     }
-    ModelResponse measured = response.withLatency(latencyMs);
-    LOG.info(
-        "model call purpose={} provider={} model={} inputTokens={} outputTokens={} latencyMs={}",
-        request.purpose(),
-        measured.provider(),
-        measured.model(),
-        measured.inputTokens(),
-        measured.outputTokens(),
-        measured.latencyMs());
-    return measured;
   }
 
   private ModelProvider selectProvider() {

@@ -25,4 +25,28 @@ public record ModelResponse(
     return new ModelResponse(
         provider, model, text, structured, inputTokens, outputTokens, measuredMs);
   }
+
+  /**
+   * Metadata only — never the answer content. The text and structured payload are derived from
+   * caller content, so the default record {@code toString} would leak them into any log line,
+   * exception dump or debugger view that renders a response.
+   */
+  @Override
+  public String toString() {
+    return "ModelResponse[provider="
+        + provider
+        + ", model="
+        + model
+        + ", text="
+        + (text == null ? "null" : text.length() + " chars")
+        + ", structured="
+        + (structured == null ? "null" : "present")
+        + ", inputTokens="
+        + inputTokens
+        + ", outputTokens="
+        + outputTokens
+        + ", latencyMs="
+        + latencyMs
+        + "]";
+  }
 }

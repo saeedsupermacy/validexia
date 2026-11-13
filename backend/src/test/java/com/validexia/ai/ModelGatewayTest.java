@@ -1,6 +1,7 @@
 package com.validexia.ai;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -126,6 +127,40 @@ class ModelGatewayTest {
                     ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
     assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
     assertTrue(thrown.getMessage().contains("verdict"));
+  }
+
+  @Test
+  void aProviderFailurePropagatesUnchangedWithItsClassification() {
+    ModelProviderException failure =
+        new ModelProviderException(ModelProviderException.Kind.TRANSPORT, "connection reset");
+    ModelProvider throwing =
+        new ModelProvider() {
+          @Override
+          public String name() {
+            return "anthropic";
+          }
+
+          @Override
+          public String model() {
+            return "fake-model";
+          }
+
+          @Override
+          public ModelResponse complete(ModelRequest request) {
+            throw failure;
+          }
+        };
+    ModelGateway gateway =
+        new ModelGateway(List.of(throwing), configured(), new StructuredOutputValidator());
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> gateway.execute(ModelRequest.text("purpose", "sys", "user")));
+    // The gateway accounts for the failure and surfaces it exactly as the provider raised it —
+    // same instance, same kind, same retryable classification for the engine to act on.
+    assertSame(failure, thrown);
+    assertEquals(ModelProviderException.Kind.TRANSPORT, thrown.kind());
+    assertTrue(thrown.retryable());
   }
 
   @Test

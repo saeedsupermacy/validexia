@@ -27,7 +27,9 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>The HTTP call sits behind a {@link Transport} seam so the request shape and response parsing
  * are unit-testable without network access; production uses {@link HttpClient}. The API key is sent
  * only as the {@code x-api-key} header of the provider call itself — it is never logged and never
- * appears in exception messages.
+ * appears in exception messages. Exception messages likewise never carry provider response bodies
+ * (which could echo caller content back): they report the HTTP status and, when the provider sent
+ * one, its machine-readable error type — nothing else.
  */
 @Component
 public class AnthropicModelProvider implements ModelProvider {
@@ -59,7 +61,13 @@ public class AnthropicModelProvider implements ModelProvider {
   }
 
   private static Transport httpTransport(AiProperties properties) {
-    Duration timeout = Duration.ofSeconds(Math.max(1, properties.timeoutSeconds()));
+    // AiProperties already validates the range; clamp again so a properties instance built by any
+    // other path can still never produce a zero or unbounded timeout.
+    Duration timeout =
+        Duration.ofSeconds(
+            Math.max(
+                AiProperties.MIN_TIMEOUT_SECONDS,
+                Math.min(AiProperties.MAX_TIMEOUT_SECONDS, properties.timeoutSeconds())));
     HttpClient client = HttpClient.newBuilder().connectTimeout(timeout).build();
     return (url, headers, body) -> {
       HttpRequest.Builder builder =
@@ -97,7 +105,7 @@ public class AnthropicModelProvider implements ModelProvider {
     headers.put("content-type", "application/json");
     TransportResponse response;
     try {
-      response = transport.post(properties.baseUrl() + "/v1/messages", headers, body);
+      response = transport.post(messagesUrl(), headers, body);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new ModelProviderException(
@@ -107,11 +115,49 @@ public class AnthropicModelProvider implements ModelProvider {
           ModelProviderException.Kind.TRANSPORT, "Anthropic call failed: " + e.getMessage(), e);
     }
     if (response.status() < 200 || response.status() >= 300) {
+      int status = response.status();
+      // The provider rejected or failed the call. A 429 or a 5xx is transient — the engine may
+      // retry it; a 4xx such as a bad key (401) or a malformed request (400) is permanent for this
+      // request and must not burn task attempts. The body is never echoed into the message: it can
+      // contain provider prose and fragments of the caller's own content.
+      boolean retryable = status == 429 || status >= 500;
       throw new ModelProviderException(
           ModelProviderException.Kind.PROVIDER_ERROR,
-          "Anthropic returned HTTP " + response.status() + ": " + abbreviate(response.body()));
+          retryable,
+          "Anthropic returned HTTP " + status + errorTypeSuffix(response.body()));
     }
-    return parseResponse(response.body());
+    ModelResponse parsed = parseResponse(response.body());
+    if (request.schema() == null && parsed.text() == null) {
+      // An unstructured call that produced no text at all answered nothing. Returning a response
+      // with null text would let a caller mistake a provider malfunction for a genuine answer.
+      throw new ModelProviderException(
+          ModelProviderException.Kind.INVALID_OUTPUT,
+          "Anthropic answered a text request without any text content");
+    }
+    return parsed;
+  }
+
+  /** The Messages endpoint URL; a trailing slash on the configured base URL never doubles. */
+  private String messagesUrl() {
+    return properties.baseUrl().replaceAll("/+$", "") + "/v1/messages";
+  }
+
+  /**
+   * Extracts the provider's machine-readable error type (e.g. {@code rate_limit_error}) from an
+   * error body, for the exception message. Only the type token is taken — never the free-text error
+   * message or any other body content — and anything that is not a plain token is dropped, so a
+   * malformed or hostile body degrades to the bare HTTP status.
+   */
+  private String errorTypeSuffix(@Nullable String body) {
+    if (body == null) {
+      return "";
+    }
+    try {
+      String type = mapper.readTree(body).path("error").path("type").asText("");
+      return type.matches("[a-z0-9_]{1,64}") ? " (error type: " + type + ")" : "";
+    } catch (JacksonException e) {
+      return "";
+    }
   }
 
   /** Builds the Messages API request body. Package-private so tests can assert its shape. */
@@ -146,9 +192,7 @@ public class AnthropicModelProvider implements ModelProvider {
       root = mapper.readTree(body);
     } catch (JacksonException e) {
       throw new ModelProviderException(
-          ModelProviderException.Kind.PROVIDER_ERROR,
-          "Anthropic response was not valid JSON: " + abbreviate(body),
-          e);
+          ModelProviderException.Kind.PROVIDER_ERROR, "Anthropic response was not valid JSON", e);
     }
     StringBuilder text = new StringBuilder();
     @Nullable JsonNode structured = null;
@@ -175,13 +219,5 @@ public class AnthropicModelProvider implements ModelProvider {
         inputTokens,
         outputTokens,
         0);
-  }
-
-  private static String abbreviate(@Nullable String body) {
-    if (body == null) {
-      return "";
-    }
-    String flat = body.replaceAll("\\s+", " ").strip();
-    return flat.length() <= 300 ? flat : flat.substring(0, 300) + "…";
   }
 }

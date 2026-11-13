@@ -34,6 +34,26 @@ public record ModelRequest(
     }
   }
 
+  /**
+   * Metadata only — never the prompt text. Prompts carry caller content (above all, vendor document
+   * text), so the default record {@code toString} would leak that content into any log line,
+   * exception dump or debugger view that renders a request.
+   */
+  @Override
+  public String toString() {
+    return "ModelRequest[purpose="
+        + purpose
+        + ", systemPrompt="
+        + systemPrompt.length()
+        + " chars, userPrompt="
+        + userPrompt.length()
+        + " chars, schema="
+        + (schema == null ? "none" : schema.fields().size() + " fields")
+        + ", maxOutputTokens="
+        + maxOutputTokens
+        + "]";
+  }
+
   public static ModelRequest text(String purpose, String systemPrompt, String userPrompt) {
     return new ModelRequest(purpose, systemPrompt, userPrompt, null, DEFAULT_MAX_OUTPUT_TOKENS);
   }
