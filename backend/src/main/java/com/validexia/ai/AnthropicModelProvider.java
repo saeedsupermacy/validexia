@@ -1,9 +1,5 @@
 package com.validexia.ai;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -15,6 +11,11 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * A real client for the Anthropic Messages API. Structured requests are executed as a forced tool
@@ -143,7 +144,7 @@ public class AnthropicModelProvider implements ModelProvider {
     JsonNode root;
     try {
       root = mapper.readTree(body);
-    } catch (IOException e) {
+    } catch (JacksonException e) {
       throw new ModelProviderException(
           ModelProviderException.Kind.PROVIDER_ERROR,
           "Anthropic response was not valid JSON: " + abbreviate(body),

@@ -1,7 +1,7 @@
 package com.validexia.ai;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
 
 /**
  * The result of one model call, with the provenance every downstream record needs: which provider

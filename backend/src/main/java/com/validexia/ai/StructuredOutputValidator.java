@@ -1,9 +1,9 @@
 package com.validexia.ai;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Enforces an {@link OutputSchema} against a model's structured answer, locally. Providers usually

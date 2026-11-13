@@ -4,9 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
 
 class StructuredOutputValidatorTest {
 
@@ -21,7 +21,7 @@ class StructuredOutputValidatorTest {
             OutputSchema.Field.optional("score", OutputSchema.Type.NUMBER)));
   }
 
-  private com.fasterxml.jackson.databind.JsonNode json(String text) throws Exception {
+  private tools.jackson.databind.JsonNode json(String text) throws Exception {
     return mapper.readTree(text);
   }
 
