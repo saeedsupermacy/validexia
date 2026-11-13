@@ -1,7 +1,7 @@
 # Validexia Backend
 
-The backend service for Validexia, built on **Java 21 + Spring Boot 4.1.2 +
-PostgreSQL**. It provides the REST API for the web interface, which lives at
+The backend service for Validexia — an AI third-party risk management
+platform — built on **Java 21 + Spring Boot 4.1.2 + PostgreSQL**. It provides the REST API for the web interface, which lives at
 the repository root; connecting the two is in progress.
 
 The service currently provides the platform foundation:
