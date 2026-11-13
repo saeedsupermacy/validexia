@@ -6,8 +6,11 @@ import com.validexia.vendors.application.VendorData;
 import com.validexia.vendors.application.VendorService;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import org.postgresql.util.PSQLException;
+import org.postgresql.util.ServerErrorMessage;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,6 +31,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/vendors")
 public class VendorController {
 
+  private static final Set<String> CRITICALITIES = Set.of("Tier 1", "Tier 2", "Tier 3");
+
   public record VendorCreateRequest(
       String name,
       @Nullable String legalName,
@@ -44,6 +49,11 @@ public class VendorController {
       @Nullable LocalDate contractEnd,
       boolean tieringComplete) {}
 
+  /**
+   * Full-replace update body. Unlike create — where the database defaults a missing criticality to
+   * Tier 3 — {@code criticality} is required here: a replace that omits it is a client error, not a
+   * silent reset.
+   */
   public record VendorUpdateRequest(
       String name,
       @Nullable String legalName,
@@ -53,7 +63,7 @@ public class VendorController {
       @Nullable String domain,
       @Nullable String website,
       @Nullable String description,
-      @Nullable String criticality,
+      String criticality,
       @Nullable UUID ownerUserId,
       @Nullable LocalDate contractStart,
       @Nullable LocalDate contractEnd,
@@ -93,9 +103,13 @@ public class VendorController {
   public VendorView createVendor(@RequestBody VendorCreateRequest request) {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    if (request.name() == null || request.name().isBlank()) {
-      throw ApiException.validation("name is required");
-    }
+    validateFields(
+        request.name(),
+        request.criticality(),
+        request.lei(),
+        request.contractStart(),
+        request.contractEnd(),
+        false);
     if (request.code() == null || request.code().isBlank()) {
       throw ApiException.validation("code is required");
     }
@@ -120,7 +134,7 @@ public class VendorController {
               request.contractEnd(),
               request.tieringComplete());
     } catch (DataIntegrityViolationException e) {
-      throw ApiException.validation("a vendor with this code already exists in the tenant");
+      throw integrityViolation(e);
     }
     return toView(requireVendor(tenantId, context.userId(), id));
   }
@@ -146,27 +160,36 @@ public class VendorController {
       @PathVariable UUID vendorId, @RequestBody VendorUpdateRequest request) {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    if (request.name() == null || request.name().isBlank()) {
-      throw ApiException.validation("name is required");
+    validateFields(
+        request.name(),
+        request.criticality(),
+        request.lei(),
+        request.contractStart(),
+        request.contractEnd(),
+        true);
+    boolean updated;
+    try {
+      updated =
+          vendors.updateVendor(
+              tenantId,
+              context.userId(),
+              vendorId,
+              request.name(),
+              request.legalName(),
+              request.lei(),
+              request.jurisdiction(),
+              request.category(),
+              request.domain(),
+              request.website(),
+              request.description(),
+              request.criticality(),
+              request.ownerUserId(),
+              request.contractStart(),
+              request.contractEnd(),
+              request.tieringComplete());
+    } catch (DataIntegrityViolationException e) {
+      throw integrityViolation(e);
     }
-    boolean updated =
-        vendors.updateVendor(
-            tenantId,
-            context.userId(),
-            vendorId,
-            request.name(),
-            request.legalName(),
-            request.lei(),
-            request.jurisdiction(),
-            request.category(),
-            request.domain(),
-            request.website(),
-            request.description(),
-            request.criticality(),
-            request.ownerUserId(),
-            request.contractStart(),
-            request.contractEnd(),
-            request.tieringComplete());
     if (!updated) {
       throw notFound(vendorId);
     }
@@ -177,9 +200,10 @@ public class VendorController {
   public VendorView terminateVendor(@PathVariable UUID vendorId) {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    if (!vendors.terminateVendor(tenantId, context.userId(), vendorId)) {
-      throw notFound(vendorId);
-    }
+    vendors.terminateVendor(tenantId, context.userId(), vendorId);
+    // Termination is idempotent: terminating an already-terminated vendor is not an error — the
+    // vendor exists and is in the desired end state, so its view is returned. requireVendor
+    // throws 404 only when the vendor does not exist in this tenant at all.
     return toView(requireVendor(tenantId, context.userId(), vendorId));
   }
 
@@ -221,6 +245,87 @@ public class VendorController {
       throw notFound(vendorId);
     }
     return listDependentSystems(vendorId);
+  }
+
+  /**
+   * Field validation shared by create and update, so routine client mistakes are 400s with an
+   * accurate message instead of database errors. {@code criticalityRequired} is true for the
+   * full-replace update (no default applies there) and false for create (the database defaults a
+   * missing criticality to Tier 3).
+   */
+  private static void validateFields(
+      @Nullable String name,
+      @Nullable String criticality,
+      @Nullable String lei,
+      @Nullable LocalDate contractStart,
+      @Nullable LocalDate contractEnd,
+      boolean criticalityRequired) {
+    if (name == null || name.isBlank()) {
+      throw ApiException.validation("name is required");
+    }
+    if (criticality == null) {
+      if (criticalityRequired) {
+        throw ApiException.validation("criticality is required");
+      }
+    } else if (!CRITICALITIES.contains(criticality)) {
+      throw ApiException.validation("criticality must be one of Tier 1, Tier 2, Tier 3");
+    }
+    if (lei != null && lei.length() != 20) {
+      throw ApiException.validation("lei must be exactly 20 characters");
+    }
+    if (contractStart != null && contractEnd != null && contractEnd.isBefore(contractStart)) {
+      throw ApiException.validation("contractEnd must not be before contractStart");
+    }
+  }
+
+  /**
+   * Maps a database integrity failure onto an accurate 400. The PostgreSQL server error in the
+   * cause chain names the violated constraint, and each known constraint gets its own message — a
+   * client is never told "duplicate code" for an unrelated problem. The owner-membership failure
+   * raised by the V12 functions carries no constraint name, so it is recognised by its message
+   * text. Anything unrecognised still maps to a generic (but accurate) constraint message: client
+   * data must never surface as a 500.
+   */
+  private static ApiException integrityViolation(DataIntegrityViolationException failure) {
+    PSQLException pg = findPostgresError(failure);
+    if (pg != null) {
+      ServerErrorMessage serverError = pg.getServerErrorMessage();
+      if (serverError != null) {
+        String constraint = serverError.getConstraint();
+        String message =
+            switch (constraint == null ? "" : constraint) {
+              case "vendors_tenant_id_code_key" ->
+                  "a vendor with this code already exists in the tenant";
+              case "vendors_criticality_check" ->
+                  "criticality must be one of Tier 1, Tier 2, Tier 3";
+              case "vendors_lei_check" -> "lei must be exactly 20 characters";
+              case "vendors_check" -> "contractEnd must not be before contractStart";
+              case "vendors_owner_user_id_fkey" ->
+                  "ownerUserId does not reference an existing user";
+              default -> null;
+            };
+        if (message != null) {
+          return ApiException.validation(message);
+        }
+        String serverMessage = serverError.getMessage();
+        if (serverMessage != null
+            && serverMessage.contains("owner is not a member of the tenant")) {
+          return ApiException.validation("owner is not a member of the tenant");
+        }
+      }
+    }
+    return ApiException.validation("the request violates a data constraint");
+  }
+
+  private static @Nullable PSQLException findPostgresError(Throwable failure) {
+    Throwable current = failure;
+    while (current != null) {
+      if (current instanceof PSQLException pg) {
+        return pg;
+      }
+      current = current.getCause();
+    }
+    return null;
   }
 
   private VendorData requireVendor(UUID tenantId, UUID userId, UUID vendorId) {

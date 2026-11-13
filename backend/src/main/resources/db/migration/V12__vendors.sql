@@ -26,6 +26,13 @@
 --
 -- Termination is a status flip, never a delete: vendor history must
 -- survive for audit and for the dependency records that reference it.
+--
+-- ROLLBACK: this migration is forward-only, like every migration in this
+-- codebase. Undoing it after merge means a NEW forward migration that
+-- drops the functions, then the tables, then the role (in that order).
+-- That rollback is lossless only while no vendor rows exist: once real
+-- vendors (and their dependent-system records) have been created,
+-- dropping the tables destroys that data by definition.
 
 DO $$
 BEGIN
@@ -57,17 +64,23 @@ CREATE TABLE public.vendors (
     created_at timestamptz NOT NULL DEFAULT pg_catalog.now(),
     updated_at timestamptz NOT NULL DEFAULT pg_catalog.now(),
     UNIQUE (tenant_id, code),
+    UNIQUE (tenant_id, id),
     CHECK (contract_end IS NULL OR contract_start IS NULL OR contract_end >= contract_start)
 );
 
 CREATE TABLE public.vendor_dependent_systems (
     id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
     tenant_id uuid NOT NULL REFERENCES public.tenants(id),
-    vendor_id uuid NOT NULL REFERENCES public.vendors(id) ON DELETE CASCADE,
+    vendor_id uuid NOT NULL,
     name text NOT NULL,
     data_handled text,
     residency text,
-    created_at timestamptz NOT NULL DEFAULT pg_catalog.now()
+    created_at timestamptz NOT NULL DEFAULT pg_catalog.now(),
+    -- Composite FK: a dependent system can only attach to a vendor of the
+    -- SAME tenant, and RESTRICT (never CASCADE) so vendor history — and
+    -- the dependency records that reference it — cannot be deleted away.
+    FOREIGN KEY (tenant_id, vendor_id) REFERENCES public.vendors (tenant_id, id)
+        ON DELETE RESTRICT
 );
 CREATE INDEX vendor_dependent_systems_vendor_idx
     ON public.vendor_dependent_systems (tenant_id, vendor_id);
@@ -75,18 +88,25 @@ CREATE INDEX vendor_dependent_systems_vendor_idx
 ALTER TABLE public.vendors OWNER TO validexia_vendors_owner;
 ALTER TABLE public.vendor_dependent_systems OWNER TO validexia_vendors_owner;
 
+-- The create/update functions verify that a named owner actually belongs
+-- to the tenant (see the membership check in those functions). That read
+-- is the one cross-module table access this slice needs; it is granted to
+-- the owner role only, never to the application role.
+GRANT SELECT ON public.memberships TO validexia_vendors_owner;
+
 ALTER TABLE public.vendors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vendors FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.vendor_dependent_systems ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vendor_dependent_systems FORCE ROW LEVEL SECURITY;
 
+-- Policy form matches V5 (no TO clause; FOR ALL with USING/WITH CHECK).
 CREATE POLICY vendors_owner_tenant ON public.vendors
-    FOR ALL TO validexia_vendors_owner
+    FOR ALL
     USING (tenant_id::text = pg_catalog.current_setting('app.tenant_id', true))
     WITH CHECK (tenant_id::text = pg_catalog.current_setting('app.tenant_id', true));
 
 CREATE POLICY vendor_systems_owner_tenant ON public.vendor_dependent_systems
-    FOR ALL TO validexia_vendors_owner
+    FOR ALL
     USING (tenant_id::text = pg_catalog.current_setting('app.tenant_id', true))
     WITH CHECK (tenant_id::text = pg_catalog.current_setting('app.tenant_id', true));
 
@@ -106,6 +126,12 @@ DECLARE v_id uuid;
 BEGIN
     IF pg_catalog.current_setting('app.tenant_id', true) IS DISTINCT FROM p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
+    END IF;
+    IF p_owner_user_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.memberships m
+        WHERE m.user_id = p_owner_user_id AND m.tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'owner is not a member of the tenant'
+            USING ERRCODE = 'foreign_key_violation';
     END IF;
     INSERT INTO public.vendors (
         tenant_id, name, legal_name, lei, jurisdiction, code, category, domain,
@@ -135,6 +161,12 @@ DECLARE v_rows int;
 BEGIN
     IF pg_catalog.current_setting('app.tenant_id', true) IS DISTINCT FROM p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
+    END IF;
+    IF p_owner_user_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.memberships m
+        WHERE m.user_id = p_owner_user_id AND m.tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'owner is not a member of the tenant'
+            USING ERRCODE = 'foreign_key_violation';
     END IF;
     UPDATE public.vendors
     SET name = p_name, legal_name = p_legal_name, lei = p_lei,
@@ -240,6 +272,9 @@ BEGIN
         WHERE v.id = p_vendor_id AND v.tenant_id = p_tenant_id) THEN
         RETURN false;
     END IF;
+    UPDATE public.vendors
+    SET updated_at = pg_catalog.now()
+    WHERE id = p_vendor_id AND tenant_id = p_tenant_id;
     DELETE FROM public.vendor_dependent_systems
     WHERE vendor_id = p_vendor_id AND tenant_id = p_tenant_id;
     RETURN true;
@@ -262,6 +297,9 @@ BEGIN
         WHERE v.id = p_vendor_id AND v.tenant_id = p_tenant_id) THEN
         RETURN false;
     END IF;
+    UPDATE public.vendors
+    SET updated_at = pg_catalog.now()
+    WHERE id = p_vendor_id AND tenant_id = p_tenant_id;
     INSERT INTO public.vendor_dependent_systems (tenant_id, vendor_id, name, data_handled, residency)
     VALUES (p_tenant_id, p_vendor_id, p_name, p_data_handled, p_residency);
     RETURN true;

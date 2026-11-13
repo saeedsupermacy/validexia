@@ -1,5 +1,6 @@
 package com.validexia.vendors;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -13,6 +14,7 @@ import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
 import com.validexia.support.TestTokens;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -202,6 +204,189 @@ class VendorFlowTest {
                 .header("X-Tenant-Id", tenantId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(CREATE_BODY))
-        .andExpect(status().isBadRequest());
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.message").value("a vendor with this code already exists in the tenant"));
+  }
+
+  @Test
+  void updateWithoutCriticalityIsA400NamingTheField() throws Exception {
+    String subject = "vendor-upd-nocrit-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String vendorId = createVendor(token, tenantId).get("id").asText();
+
+    mvc.perform(
+            put("/api/v1/vendors/" + vendorId)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"CloudScale Renamed\",\"tieringComplete\":false}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("criticality is required"));
+  }
+
+  @Test
+  void updateWithUnknownCriticalityIsA400AboutCriticalityNotDuplicates() throws Exception {
+    String subject = "vendor-upd-tier9-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String vendorId = createVendor(token, tenantId).get("id").asText();
+
+    mvc.perform(
+            put("/api/v1/vendors/" + vendorId)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"name\":\"CloudScale Renamed\",\"criticality\":\"Tier 9\","
+                        + "\"tieringComplete\":false}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.message").value("criticality must be one of Tier 1, Tier 2, Tier 3"));
+  }
+
+  @Test
+  void createWithShortLeiIsA400AboutTheLei() throws Exception {
+    String subject = "vendor-lei-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+
+    mvc.perform(
+            post("/api/v1/vendors")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"name\":\"Short LEI Co\",\"lei\":\"1234567890ABCDEFGHI\","
+                        + "\"code\":\"VND-LEI\"}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("lei must be exactly 20 characters"));
+  }
+
+  @Test
+  void createWithContractEndBeforeStartIsA400() throws Exception {
+    String subject = "vendor-dates-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+
+    mvc.perform(
+            post("/api/v1/vendors")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"name\":\"Backwards Dates Ltd\",\"code\":\"VND-DTE\","
+                        + "\"contractStart\":\"2027-01-15\",\"contractEnd\":\"2024-01-15\"}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("contractEnd must not be before contractStart"));
+  }
+
+  @Test
+  void createWithNonexistentOwnerIsA400() throws Exception {
+    String subject = "vendor-noowner-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+
+    mvc.perform(
+            post("/api/v1/vendors")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"name\":\"Ghost Owner Ltd\",\"code\":\"VND-GHO\",\"ownerUserId\":\""
+                        + UUID.randomUUID()
+                        + "\"}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("ownerUserId does not reference an existing user"));
+  }
+
+  @Test
+  void createWithOwnerOutsideTheTenantIsA400ButAMemberOwnerWorks() throws Exception {
+    String subject = "vendor-membership-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+
+    // A user who exists globally but has no membership in this tenant.
+    UUID outsider = UUID.randomUUID();
+    admin.update(
+        "INSERT INTO public.users (id, external_subject) VALUES (?, ?)",
+        outsider,
+        "sub-" + outsider);
+
+    mvc.perform(
+            post("/api/v1/vendors")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"name\":\"Outsider Owned Ltd\",\"code\":\"VND-OUT\",\"ownerUserId\":\""
+                        + outsider
+                        + "\"}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("owner is not a member of the tenant"));
+
+    // Control: the caller themselves IS a member, so owning a vendor works.
+    UUID callerId = directory.findUser(subject).orElseThrow().userId();
+    mvc.perform(
+            post("/api/v1/vendors")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"name\":\"Member Owned Ltd\",\"code\":\"VND-MEM\",\"ownerUserId\":\""
+                        + callerId
+                        + "\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.ownerUserId").value(callerId.toString()));
+  }
+
+  @Test
+  void terminateIsIdempotent() throws Exception {
+    String subject = "vendor-term-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String vendorId = createVendor(token, tenantId).get("id").asText();
+
+    mvc.perform(
+            post("/api/v1/vendors/" + vendorId + "/terminate")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("Terminated"));
+
+    // Second terminate: the vendor exists and is already in the desired end state.
+    mvc.perform(
+            post("/api/v1/vendors/" + vendorId + "/terminate")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(vendorId))
+        .andExpect(jsonPath("$.status").value("Terminated"));
+  }
+
+  @Test
+  void dependentSystemsReplaceBumpsVendorUpdatedAt() throws Exception {
+    String subject = "vendor-fresh-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    UUID vendorId = UUID.fromString(createVendor(token, tenantId).get("id").asText());
+
+    OffsetDateTime before =
+        admin.queryForObject(
+            "SELECT updated_at FROM public.vendors WHERE id = ?", OffsetDateTime.class, vendorId);
+
+    mvc.perform(
+            put("/api/v1/vendors/" + vendorId + "/dependent-systems")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("[{\"name\":\"Core Billing Engine\"}]"))
+        .andExpect(status().isOk());
+
+    OffsetDateTime after =
+        admin.queryForObject(
+            "SELECT updated_at FROM public.vendors WHERE id = ?", OffsetDateTime.class, vendorId);
+    assertTrue(after.isAfter(before), "updated_at must increase when dependent systems change");
   }
 }

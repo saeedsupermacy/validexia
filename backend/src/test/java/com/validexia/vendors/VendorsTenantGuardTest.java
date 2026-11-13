@@ -66,6 +66,20 @@ class VendorsTenantGuardTest {
           + " 'VND-001', 'Cloud', 'acme.example', null, null, 'Tier 1', null,"
           + " DATE '2024-01-15', DATE '2027-01-15', true)";
 
+  private static final String UPDATE_SQL =
+      "SELECT public.update_vendor(?, ?, 'Acme', 'Acme Corp Ltd', '1234567890ABCDEFGH12', 'GB',"
+          + " 'Cloud', 'acme.example', null, null, 'Tier 1', null,"
+          + " DATE '2024-01-15', DATE '2027-01-15', true)";
+
+  private static final String CLEAR_SYSTEMS_SQL =
+      "SELECT public.clear_vendor_dependent_systems(?, ?)";
+
+  private static final String ADD_SYSTEM_SQL =
+      "SELECT public.add_vendor_dependent_system(?, ?, 'Billing', 'PCI', 'us-east-1')";
+
+  private static final String LIST_SYSTEMS_SQL =
+      "SELECT * FROM public.list_vendor_dependent_systems(?, ?)";
+
   @Test
   void createAndReadSucceedUnderTheMatchingContext() throws Exception {
     UUID tenant = seedTenant("ok-");
@@ -97,6 +111,10 @@ class VendorsTenantGuardTest {
     try {
       assertRejected(noContext, CREATE_SQL, tenant);
       assertRejected(noContext, "SELECT * FROM public.list_vendors(?)", tenant);
+      assertRejected(noContext, UPDATE_SQL, tenant, UUID.randomUUID());
+      assertRejected(noContext, CLEAR_SYSTEMS_SQL, tenant, UUID.randomUUID());
+      assertRejected(noContext, ADD_SYSTEM_SQL, tenant, UUID.randomUUID());
+      assertRejected(noContext, LIST_SYSTEMS_SQL, tenant, UUID.randomUUID());
     } finally {
       close(noContext);
     }
@@ -118,6 +136,10 @@ class VendorsTenantGuardTest {
       assertRejected(foreign, "SELECT * FROM public.list_vendors(?)", tenant);
       assertRejected(foreign, "SELECT * FROM public.get_vendor(?, ?)", tenant, UUID.randomUUID());
       assertRejected(foreign, "SELECT public.terminate_vendor(?, ?)", tenant, UUID.randomUUID());
+      assertRejected(foreign, UPDATE_SQL, tenant, UUID.randomUUID());
+      assertRejected(foreign, CLEAR_SYSTEMS_SQL, tenant, UUID.randomUUID());
+      assertRejected(foreign, ADD_SYSTEM_SQL, tenant, UUID.randomUUID());
+      assertRejected(foreign, LIST_SYSTEMS_SQL, tenant, UUID.randomUUID());
     } finally {
       close(foreign);
     }
