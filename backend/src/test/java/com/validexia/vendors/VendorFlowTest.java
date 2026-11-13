@@ -259,7 +259,7 @@ class VendorFlowTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     "{\"name\":\"Short LEI Co\",\"lei\":\"1234567890ABCDEFGHI\","
-                        + "\"code\":\"VND-LEI\"}"))
+                        + "\"code\":\"VND-LEI\",\"tieringComplete\":false}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.message").value("lei must be exactly 20 characters"));
   }
@@ -277,7 +277,7 @@ class VendorFlowTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     "{\"name\":\"Backwards Dates Ltd\",\"code\":\"VND-DTE\","
-                        + "\"contractStart\":\"2027-01-15\",\"contractEnd\":\"2024-01-15\"}"))
+                        + "\"contractStart\":\"2027-01-15\",\"contractEnd\":\"2024-01-15\",\"tieringComplete\":false}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.message").value("contractEnd must not be before contractStart"));
   }
@@ -296,7 +296,7 @@ class VendorFlowTest {
                 .content(
                     "{\"name\":\"Ghost Owner Ltd\",\"code\":\"VND-GHO\",\"ownerUserId\":\""
                         + UUID.randomUUID()
-                        + "\"}"))
+                        + "\",\"tieringComplete\":false}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.message").value("ownerUserId does not reference an existing user"));
   }
@@ -322,7 +322,7 @@ class VendorFlowTest {
                 .content(
                     "{\"name\":\"Outsider Owned Ltd\",\"code\":\"VND-OUT\",\"ownerUserId\":\""
                         + outsider
-                        + "\"}"))
+                        + "\",\"tieringComplete\":false}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.message").value("owner is not a member of the tenant"));
 
@@ -336,7 +336,7 @@ class VendorFlowTest {
                 .content(
                     "{\"name\":\"Member Owned Ltd\",\"code\":\"VND-MEM\",\"ownerUserId\":\""
                         + callerId
-                        + "\"}"))
+                        + "\",\"tieringComplete\":false}"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.ownerUserId").value(callerId.toString()));
   }
