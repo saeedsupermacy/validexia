@@ -1,5 +1,7 @@
 export interface ApiErrorResponse {
- error_code: string;
+ /** The real backend sends {code, message} on every error (ApiErrorHandler). */
+ code?: string;
+ error_code?: string;
  message: string;
  details?: Record<string, string[]>;
 }
