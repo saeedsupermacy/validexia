@@ -1,6 +1,6 @@
 # Validexia
 
-Validexia is a third-party risk management (TPRM) platform. It helps security and
+Validexia is an AI third-party risk management (TPRM) platform. It helps security and
 compliance teams keep track of their vendors, the evidence those vendors provide,
 the risks that follow from relying on them, and the work needed to reduce those
 risks.
@@ -35,7 +35,7 @@ currently in progress.
 
 ## Direction
 
-Validexia is being built as an AI-assisted TPRM platform, with these long-term
+Validexia is being built as an AI-powered TPRM platform, with these long-term
 goals:
 
 - AI agents that handle routine TPRM work — researching vendors, checking
