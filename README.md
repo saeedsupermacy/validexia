@@ -64,7 +64,7 @@ vendor data.
 
 ## Running the interface
 
-Requires Node.js 20+.
+Requires Node.js 20.19+ or 22.12+ (the versions Vite 8 supports).
 
 ```bash
 npm install
