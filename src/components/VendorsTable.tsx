@@ -1,11 +1,14 @@
 // src/components/VendorsTable.tsx
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { 
- Search, ArrowUpDown, Download, Plus, 
- X, SlidersHorizontal, RotateCcw, ShieldAlert 
+  Search, ArrowUpDown, Download, Plus, 
+  X, SlidersHorizontal, RotateCcw, ShieldAlert, ServerCrash, Building2
 } from 'lucide-react';
 import { Card, CardContent, Button, Eyebrow, ScoreRing} from '../shared/ui/core';
 import { VendorDetailWorkspace } from '../features/vendors/VendorDetailWorkspace';
+import { useVendors } from '../features/vendors/useVendors';
+import { TableSkeleton } from '../shared/ui/loading';
+import { normalizeApiError } from '../shared/api/errorHandler';
 import { getNavParams, clearNavParams, navigateTo, parseHash } from '../shared/navigation';
 import { DeepLinkBanner } from '../shared/ui/DeepLinkBanner';
 import { Dialog } from '../shared/ui/Dialog';
@@ -13,7 +16,6 @@ import { Dialog } from '../shared/ui/Dialog';
 // ... (Types and DEV_VENDORS remain unchanged) ...
 import type { RiskLevel, BusinessCriticality, EvidenceStatus, AssessmentStatus, VendorRecord } from '../data/vendors';
 export type { RiskLevel, BusinessCriticality, EvidenceStatus, AssessmentStatus, VendorRecord };
-import { getVendorsWithStatus, addVendor } from '../data/vendors';
 import { recordMaterialChange } from '../data/materialChanges';
 import { showToast } from '../shared/ui/toast';
 import { auditStore } from '../features/audit/auditStore';
@@ -47,7 +49,8 @@ const DEFAULT_FILTERS: FilterState = {
 export function VendorsTable() {
  const [activeVendorId, setActiveVendorId] = useState<string | null>(null);
  const [isAddVendorOpen, setIsAddVendorOpen] = useState(false);
- const [vendors, setVendors] = useState(() => getVendorsWithStatus());
+ const { vendors, status, error, refresh, createVendor, terminateVendor } = useVendors();
+ const [isCreating, setIsCreating] = useState(false);
  // Row id of a vendor added moments ago — scroll to + highlight it.
  const [justAddedId, setJustAddedId] = useState<string | null>(null);
  // Form state for the Add Vendor modal
@@ -86,33 +89,46 @@ export function VendorsTable() {
  URL.revokeObjectURL(url);
  };
 
- const handleAddVendor = () => {
- if (!newVendorName.trim()) return;
- const record = addVendor({ name: newVendorName, criticality: newVendorTier, owner: newVendorOwner, website: newVendorWebsite, description: newVendorDesc });
- auditStore.appendRecord('Current User', 'VENDOR_ADDED', newVendorName.trim(), `Added ${newVendorTier} vendor via Vendors tab`);
- recordMaterialChange({
- objectName: record.name,
- objectType: 'Vendor',
- eventType: 'risk_change',
- changeSummary: `New vendor "${record.name}" added to the portfolio (${record.criticality})`,
- severity: 'info',
- contextReason: 'Vendor registered via the Vendors tab. Complete their assessment and evidence to establish a risk baseline.',
- actionLabel: 'Open Vendor Profile',
- });
- // Reset filters so the new vendor is visible, then scroll to + highlight its row.
- setFilters(DEFAULT_FILTERS);
- setDeepLink(null);
- setVendors(getVendorsWithStatus());
- setJustAddedId(record.id);
- showToast(`"${record.name}" added to your portfolio`, 'success');
- setNewVendorName('');
- setNewVendorTier('Tier 2');
- setNewVendorOwner('');
- setNewVendorWebsite('');
- setNewVendorDesc('');
- setTierDataAccess('');
- setTierCriticality('');
- setIsAddVendorOpen(false);
+ const handleAddVendor = async () => {
+ if (!newVendorName.trim() || isCreating) return;
+ setIsCreating(true);
+ try {
+    const record = await createVendor({
+      name: newVendorName,
+      criticality: newVendorTier,
+      owner: newVendorOwner,
+      website: newVendorWebsite,
+      description: newVendorDesc,
+      tieringComplete: Boolean(tierDataAccess || tierCriticality),
+    });
+    auditStore.appendRecord('Current User', 'VENDOR_ADDED', record.name, `Added ${record.criticality} vendor via Vendors tab`);
+    recordMaterialChange({
+      objectName: record.name,
+      objectType: 'Vendor',
+      eventType: 'risk_change',
+      changeSummary: `New vendor "${record.name}" added to the portfolio (${record.criticality})`,
+      severity: 'info',
+      contextReason: 'Vendor registered via the Vendors tab. Complete their assessment and evidence to establish a risk baseline.',
+      actionLabel: 'Open Vendor Profile',
+    });
+    // Reset filters so the new vendor is visible, then scroll to + highlight its row.
+    setFilters(DEFAULT_FILTERS);
+    setDeepLink(null);
+    setJustAddedId(record.id);
+    showToast(`"${record.name}" added to your portfolio`, 'success');
+    setNewVendorName('');
+    setNewVendorTier('Tier 2');
+    setNewVendorOwner('');
+    setNewVendorWebsite('');
+    setNewVendorDesc('');
+    setTierDataAccess('');
+    setTierCriticality('');
+    setIsAddVendorOpen(false);
+ } catch (e) {
+    showToast(normalizeApiError(e).message || 'Could not add vendor. Please try again.', 'error');
+ } finally {
+    setIsCreating(false);
+ }
  };
 
  // Scroll to + briefly highlight a newly added vendor's row.
@@ -130,16 +146,16 @@ export function VendorsTable() {
  const [deepLink, setDeepLink] = useState<{ label: string; highlight: string } | null>(null);
  const [deepLinkSource, setDeepLinkSource] = useState<string>('another tab');
  const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
+ /** Vendor id from a deep link, held until the API list has loaded. */
+ const pendingVendorIdRef = useRef<string | null>(null);
  useEffect(() => {
  const params = getNavParams();
- // Vendor detail deep link takes precedence — open the detail page by ID (exact match, not name substring)
+ // Vendor detail deep link takes precedence — open the detail page by ID (exact match, not
+ // name substring). The API list loads asynchronously, so hold the id until it arrives.
  if (params.vendorId && typeof params.vendorId === 'string') {
- const match = getVendorsWithStatus().find(v => v.id === params.vendorId);
- if (match) {
- setActiveVendorId(match.id);
+ pendingVendorIdRef.current = params.vendorId;
  clearNavParams();
  return;
- }
  }
  let changed = false;
  const next: Partial<FilterState> = {};
@@ -200,6 +216,23 @@ export function VendorsTable() {
  }
  }, []);
 
+ // Open a deep-linked vendor once the API list has loaded.
+ useEffect(() => {
+ if (status !== 'success' || !pendingVendorIdRef.current) return;
+ const id = pendingVendorIdRef.current;
+ pendingVendorIdRef.current = null;
+ if (vendors.some(v => v.id === id)) {
+ setActiveVendorId(id);
+ }
+ }, [status, vendors]);
+
+ // If the open vendor disappears from the API list (terminated elsewhere), close the detail.
+ useEffect(() => {
+ if (activeVendorId && status === 'success' && !vendors.some(v => v.id === activeVendorId)) {
+ setActiveVendorId(null);
+ }
+ }, [activeVendorId, status, vendors]);
+
  // Scroll the first highlighted row into view + pulse it
  useEffect(() => {
  if (deepLink && highlightRowRef.current) {
@@ -214,16 +247,16 @@ export function VendorsTable() {
  const parsed = parseHash();
  if (parsed && parsed.view === 'vendors') {
  const vid = parsed.params.vendorId;
- if (typeof vid === 'string' && vid && getVendorsWithStatus().some(v => v.id === vid)) {
- setActiveVendorId(vid);
+ if (typeof vid === 'string' && vid && vendors.some(v => v.id === vid)) {
+  setActiveVendorId(vid);
  } else {
- setActiveVendorId(null);
+  setActiveVendorId(null);
  }
  }
  };
  window.addEventListener('hashchange', syncDetailFromHash);
  return () => window.removeEventListener('hashchange', syncDetailFromHash);
- }, []);
+ }, [vendors]);
 
  /** Open a vendor's detail page and reflect it in the URL (shareable/bookmarkable). */
  const openVendorDetail = (id: string) => {
@@ -317,6 +350,13 @@ export function VendorsTable() {
  (filters.needsAttention ? 1 : 0);
  }, [filters]);
 
+ // Owners come from the API records, not a hardcoded demo list.
+ const ownerOptions = useMemo(() => {
+ return Array.from(new Set(
+ vendors.map(v => v.owner).filter((owner): owner is string => Boolean(owner) && owner !== 'Unassigned')
+ )).sort();
+ }, [vendors]);
+
  const handleSort = (field: keyof VendorRecord) => {
  if (sortField === field) {
  setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
@@ -357,7 +397,18 @@ export function VendorsTable() {
  };
 
  if (activeVendorId) {
- return <VendorDetailWorkspace vendorId={activeVendorId} onBack={closeVendorDetail} />;
+ const activeVendor = vendors.find(v => v.id === activeVendorId);
+ if (activeVendor) {
+    return (
+      <VendorDetailWorkspace
+        vendorId={activeVendor.id}
+        initialVendor={activeVendor}
+        onTerminate={terminateVendor}
+        onBack={closeVendorDetail}
+      />
+    );
+ }
+ // The vendor vanished from the API list — fall through to the portfolio.
  }
 
  return (
@@ -365,7 +416,11 @@ export function VendorsTable() {
  
  {/* Live Region for Screen Readers */}
  <div aria-live="polite" className="sr-only">
- {filteredVendors.length} vendors matched active filters.
+ {status === 'loading'
+    ? 'Loading vendors.'
+    : status === 'error'
+      ? "Couldn't load vendors."
+      : `${filteredVendors.length} vendors matched active filters.`}
  </div>
 
  {deepLink && (
@@ -386,7 +441,7 @@ export function VendorsTable() {
  </p>
  </div>
  <div className="flex items-center gap-3">
- <Button variant="secondary" size="sm" onClick={handleExportAudit} aria-label={`Export ${filteredVendors.length} vendors to CSV`}>
+ <Button variant="secondary" size="sm" onClick={handleExportAudit} disabled={status !== 'success'} aria-label={`Export ${filteredVendors.length} vendors to CSV`}>
  <Download aria-hidden="true" size={14} className="mr-1.5" />
  Export CSV
  </Button>
@@ -517,7 +572,7 @@ export function VendorsTable() {
  <fieldset className="space-y-1.5 border-none p-0 m-0">
  <legend className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary mb-1">Owner</legend>
  <div className="flex flex-wrap gap-1.5">
- {['Sarah Jenkins', 'Marcus Chen', 'Alex Rivera'].map(owner => {
+ {ownerOptions.length > 0 ? ownerOptions.map(owner => {
  const active = filters.owners.includes(owner);
  return (
  <button
@@ -532,7 +587,9 @@ export function VendorsTable() {
  {owner}
  </button>
  );
- })}
+ }) : (
+ <span className="text-xs text-text-tertiary">No owners recorded yet.</span>
+ )}
  </div>
  </fieldset>
 
@@ -648,6 +705,40 @@ export function VendorsTable() {
  </Card>
 
  <Card className="overflow-hidden shadow-sm">
+ {status === 'loading' ? (
+ <div className="p-5">
+ <TableSkeleton rows={6} cols={8} />
+ </div>
+ ) : status === 'error' ? (
+ <div className="p-8 flex flex-col items-center text-center space-y-3" role="alert">
+ <div className="w-10 h-10 rounded-xl bg-risk-critical/10 border border-risk-critical/20 flex items-center justify-center text-risk-critical">
+ <ServerCrash aria-hidden="true" size={20} />
+ </div>
+ <div>
+ <h3 className="text-sm font-bold text-text-primary m-0">Couldn't load vendors</h3>
+ <p className="text-xs text-text-secondary mt-1 m-0 max-w-md">
+ {error?.message || 'Something went wrong while contacting the server.'}
+ {error?.code ? <span className="font-mono text-text-tertiary"> ({error.code})</span> : null}
+ </p>
+ </div>
+ <Button variant="secondary" size="sm" onClick={refresh}>
+ <RotateCcw aria-hidden="true" size={12} className="mr-1.5" /> Retry
+ </Button>
+ </div>
+ ) : vendors.length === 0 ? (
+ <div className="p-12 flex flex-col items-center text-center space-y-3">
+ <div className="w-10 h-10 rounded-xl bg-surface-hover border border-border flex items-center justify-center text-text-tertiary">
+ <Building2 aria-hidden="true" size={20} />
+ </div>
+ <div>
+ <h3 className="text-sm font-bold text-text-primary m-0">No vendors yet</h3>
+ <p className="text-xs text-text-secondary mt-1 m-0">Register your first vendor to start building the portfolio.</p>
+ </div>
+ <Button variant="primary" size="sm" onClick={() => setIsAddVendorOpen(true)}>
+ <Plus aria-hidden="true" size={14} className="mr-1.5" /> Add Vendor
+ </Button>
+ </div>
+ ) : (
  <div className="overflow-x-auto">
  <table className="w-full text-left text-sm whitespace-nowrap">
  <caption className="sr-only">Vendor Details and Risk Profiles</caption>
@@ -806,6 +897,7 @@ export function VendorsTable() {
  </tbody>
  </table>
  </div>
+ )}
  </Card>
 
  <Dialog open={isAddVendorOpen} onClose={() => setIsAddVendorOpen(false)} title="Add Vendor" maxWidth="max-w-md">
@@ -871,7 +963,7 @@ export function VendorsTable() {
  </div>
  <div className="flex justify-end gap-2 pt-1">
  <Button variant="secondary" size="sm" onClick={() => setIsAddVendorOpen(false)}>Cancel</Button>
- <Button variant="primary" size="sm" onClick={handleAddVendor} disabled={!newVendorName.trim()}>Add Vendor</Button>
+ <Button variant="primary" size="sm" onClick={handleAddVendor} disabled={!newVendorName.trim() || isCreating} isLoading={isCreating}>Add Vendor</Button>
  </div>
  </div>
  </Dialog>

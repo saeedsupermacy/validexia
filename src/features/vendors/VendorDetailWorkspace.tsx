@@ -13,6 +13,7 @@ import { RiskDimensionsSection } from './RiskDimensionsSection';
 import { hasAuthoredDetail, buildExposureModel, buildBusinessImpactModel, buildRiskDimensionsModel } from './vendorDetailModel';
 import { offboardVendor, getVendorsWithStatus } from '../../data/vendors';
 import type { VendorRecord } from '../../data/vendors';
+import { normalizeApiError } from '../../shared/api/errorHandler';
 import { getEvidenceForVendor } from '../../data/evidence';
 import { getRemediationsForVendor, addRemediation, type RemediationSeverity } from '../../data/remediation';
 import { getDecisionsForVendor, addDecision, type DecisionType } from '../../data/decisions';
@@ -32,11 +33,15 @@ export interface VendorDetailViewModel extends VendorRecord {
 }
 
 interface VendorDetailProps {
- vendorId?: string;
- onBack?: () => void;
+  vendorId?: string;
+  /** API-backed record supplied by the Vendors table. */
+  initialVendor?: VendorRecord;
+  /** Terminate through the REST API. Provided when `initialVendor` is API-backed. */
+  onTerminate?: (id: string) => Promise<VendorRecord>;
+  onBack?: () => void;
 }
 
-export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorDetailProps) {
+export function VendorDetailWorkspace({ vendorId = 'vend-001', initialVendor, onTerminate, onBack }: VendorDetailProps) {
  const [isActionsOpen, setIsActionsOpen] = useState(false);
  const [isOffboardOpen, setIsOffboardOpen] = useState(false);
  const [offboardChecklist, setOffboardChecklist] = useState({ accessRevoked: false, dataDestroyed: false, contractsClosed: false });
@@ -66,8 +71,10 @@ export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorD
  return () => document.removeEventListener('keydown', handleKeyDown);
  }, []);
 
- // Source of truth: shared vendor registry (matches the Vendors table).
- const sharedVendor = getVendorsWithStatus().find(v => v.id === vendorId) || getVendorsWithStatus()[0];
+ // Source of truth: the API record passed by the Vendors table; the shared registry
+ // remains a fallback for callers that render the detail without one.
+ const registryVendor = getVendorsWithStatus().find(v => v.id === vendorId) || getVendorsWithStatus()[0];
+ const sharedVendor = initialVendor ?? registryVendor;
  const resolvedId = sharedVendor?.id ?? vendorId;
  const resolvedName = sharedVendor?.name ?? 'Unknown Vendor';
 
@@ -440,22 +447,38 @@ export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorD
  variant="primary"
  size="sm"
  disabled={!offboardChecklist.accessRevoked || !offboardChecklist.dataDestroyed || !offboardChecklist.contractsClosed}
- onClick={() => {
- if (offboardVendor(vendor.id, offboardChecklist)) {
- auditStore.appendRecord('Current User', 'VENDOR_OFFBOARDED', vendor.name, 'Offboarding checklist completed: access revoked, data destroyed, contracts closed');
- recordMaterialChange({
- objectName: vendor.name,
- objectType: 'Vendor',
- eventType: 'risk_change',
- changeSummary: `${vendor.name} was offboarded and marked Terminated`,
- severity: 'high',
- contextReason: 'Offboarding checklist completed: access revoked, data destroyed, contracts closed.',
- actionLabel: 'View Vendors',
- });
- showToast(`${vendor.name} offboarded`, 'success');
- setIsOffboardOpen(false);
- navigateTo('vendors');
- }
+ onClick={async () => {
+   // An API-backed workspace terminates through the REST API; the fixture path remains
+   // only for the standalone prototype, where no API client was supplied.
+   try {
+     if (onTerminate) {
+       await onTerminate(vendor.id);
+     } else if (!offboardVendor(vendor.id, offboardChecklist)) {
+       return;
+     }
+     auditStore.appendRecord('Current User', 'VENDOR_OFFBOARDED', vendor.name, 'Offboarding checklist completed: access revoked, data destroyed, contracts closed');
+     recordMaterialChange({
+       objectName: vendor.name,
+       objectType: 'Vendor',
+       eventType: 'risk_change',
+       changeSummary: `${vendor.name} was offboarded and marked Terminated`,
+       severity: 'high',
+       contextReason: 'Offboarding checklist completed: access revoked, data destroyed, contracts closed.',
+       actionLabel: 'View Vendors',
+     });
+     showToast(`${vendor.name} offboarded`, 'success');
+     setIsOffboardOpen(false);
+     navigateTo('vendors');
+   } catch (e) {
+     const failure = normalizeApiError(e);
+     if (failure.status === 401) {
+       setShowSessionExpired(true);
+     } else if (failure.status === 403) {
+       setShowPermissionModal(true);
+     } else {
+       setHasNetworkError(true);
+     }
+   }
  }}
  className="bg-risk-critical hover:bg-risk-critical/90 border-risk-critical"
  >
