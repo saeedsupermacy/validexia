@@ -45,24 +45,31 @@ interface VendorDetailProps {
  * exists in the demo registry keeps the existing demo detail; an id that
  * exists in neither shows an honest not-found state.
  */
+type DetailResolution =
+ | { phase: 'checking' }
+ | { phase: 'live'; vendor: ApiVendor }
+ | { phase: 'fixture' }
+ | { phase: 'notfound'; message: string };
+
 export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorDetailProps) {
- const [resolution, setResolution] = useState<
- { phase: 'checking' } | { phase: 'live'; vendor: ApiVendor } | { phase: 'fixture' } | { phase: 'notfound'; message: string }
- >({ phase: 'checking' });
+ // Keyed by vendorId: an outcome only applies to the id it was resolved for,
+ // so switching vendors derives 'checking' without a synchronous setState.
+ const [resolved, setResolved] = useState<{ forId: string; outcome: DetailResolution } | null>(null);
+ const resolution: DetailResolution =
+ resolved && resolved.forId === vendorId ? resolved.outcome : { phase: 'checking' };
 
  useEffect(() => {
  let cancelled = false;
- setResolution({ phase: 'checking' });
  (async () => {
  try {
  const vendor = await fetchVendorOnApi(vendorId);
- if (!cancelled) setResolution({ phase: 'live', vendor });
+ if (!cancelled) setResolved({ forId: vendorId, outcome: { phase: 'live', vendor } });
  } catch (error) {
  if (cancelled) return;
  if (getVendorsWithStatus().some(v => v.id === vendorId)) {
- setResolution({ phase: 'fixture' });
+ setResolved({ forId: vendorId, outcome: { phase: 'fixture' } });
  } else {
- setResolution({ phase: 'notfound', message: apiErrorMessage(error) });
+ setResolved({ forId: vendorId, outcome: { phase: 'notfound', message: apiErrorMessage(error) } });
  }
  }
  })();
