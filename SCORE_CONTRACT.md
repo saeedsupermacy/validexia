@@ -1,15 +1,19 @@
 # Validexia Risk Scoring Contract
 
-**Version:** 1.0 | **Date:** 2026-10-09 | **Status:** Frontend definition — must be reconciled with backend before integration.
+**Version:** 1.0 | **Date:** 2026-10-09 | **Status:** Design note. This document defines the
+scoring semantics used by the web interface. The backend does not currently emit risk
+scores; how backend scoring will be produced and reconciled with these semantics is an
+open design decision.
 
 ## The critical rule
 
-> **In the Validexia frontend, HIGHER score = HIGHER risk (more dangerous).**
-> Scale: 0–100. A vendor scoring 92 is more dangerous than one scoring 18.
+> **In the Validexia interface, a HIGHER score means HIGHER risk.**
+> Scale: 0–100. A vendor scoring 92 is riskier than one scoring 18.
 
-This is the OPPOSITE of some backend conventions (e.g., 0–1000 where higher = safer).
-**Do not wire a backend score into the frontend without confirming direction.**
-Wiring an inverted score would display safe vendors as critical and vice versa.
+Some scoring systems use the opposite convention (for example, a 0–1000 scale where a
+higher number means safer). Any future backend score must be reconciled with the rule
+above before it is displayed: wiring an inverted score into the interface would show
+safe vendors as critical and critical vendors as safe.
 
 ## Score definitions
 
