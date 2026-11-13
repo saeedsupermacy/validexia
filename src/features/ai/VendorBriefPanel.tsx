@@ -61,6 +61,15 @@ function parseBriefObject(parsed: unknown): ParsedBrief | null {
  const keyFacts = Array.isArray(o.keyFacts)
  ? o.keyFacts.map(parseFact).filter((f): f is BriefFact => f !== null)
  : [];
+ // A brief-shaped object must carry at least one brief signal; any other
+ // JSON object is not a brief and falls through to the raw-result warning.
+ if (
+  !(typeof o.summary === 'string' && o.summary.trim()) &&
+  o.abstained !== true &&
+  keyFacts.length === 0
+ ) {
+  return null;
+ }
  return {
  summary: typeof o.summary === 'string' ? o.summary : undefined,
  keyFacts,
