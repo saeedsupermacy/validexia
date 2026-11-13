@@ -13,6 +13,9 @@ import { RiskDimensionsSection } from './RiskDimensionsSection';
 import { hasAuthoredDetail, buildExposureModel, buildBusinessImpactModel, buildRiskDimensionsModel } from './vendorDetailModel';
 import { offboardVendor, getVendorsWithStatus } from '../../data/vendors';
 import type { VendorRecord } from '../../data/vendors';
+import { fetchVendorOnApi, apiErrorMessage } from './service';
+import type { ApiVendor } from './api';
+import { LiveVendorDetail } from './LiveVendorDetail';
 import { getEvidenceForVendor } from '../../data/evidence';
 import { getRemediationsForVendor, addRemediation, type RemediationSeverity } from '../../data/remediation';
 import { getDecisionsForVendor, addDecision, type DecisionType } from '../../data/decisions';
@@ -36,7 +39,77 @@ interface VendorDetailProps {
  onBack?: () => void;
 }
 
+/**
+ * Resolves the record source before rendering: a vendor that exists on the
+ * real API gets the live detail view (real fields only); an id that only
+ * exists in the demo registry keeps the existing demo detail; an id that
+ * exists in neither shows an honest not-found state.
+ */
+type DetailResolution =
+ | { phase: 'checking' }
+ | { phase: 'live'; vendor: ApiVendor }
+ | { phase: 'fixture' }
+ | { phase: 'notfound'; message: string };
+
 export function VendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorDetailProps) {
+ // Keyed by vendorId: an outcome only applies to the id it was resolved for,
+ // so switching vendors derives 'checking' without a synchronous setState.
+ const [resolved, setResolved] = useState<{ forId: string; outcome: DetailResolution } | null>(null);
+ const resolution: DetailResolution =
+ resolved && resolved.forId === vendorId ? resolved.outcome : { phase: 'checking' };
+
+ useEffect(() => {
+ let cancelled = false;
+ (async () => {
+ try {
+ const vendor = await fetchVendorOnApi(vendorId);
+ if (!cancelled) setResolved({ forId: vendorId, outcome: { phase: 'live', vendor } });
+ } catch (error) {
+ if (cancelled) return;
+ if (getVendorsWithStatus().some(v => v.id === vendorId)) {
+ setResolved({ forId: vendorId, outcome: { phase: 'fixture' } });
+ } else {
+ setResolved({ forId: vendorId, outcome: { phase: 'notfound', message: apiErrorMessage(error) } });
+ }
+ }
+ })();
+ return () => { cancelled = true; };
+ }, [vendorId]);
+
+ if (resolution.phase === 'checking') {
+ return (
+ <div className="max-w-7xl mx-auto pb-28 animate-in fade-in duration-200">
+ <div role="status" className="flex items-center gap-2.5 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-text-secondary">
+ <div aria-hidden="true" className="w-4 h-4 border-2 border-accent/25 border-t-accent rounded-full animate-spin"></div>
+ Loading vendor record…
+ </div>
+ </div>
+ );
+ }
+ if (resolution.phase === 'live') {
+ return <LiveVendorDetail initialVendor={resolution.vendor} onBack={onBack} />;
+ }
+ if (resolution.phase === 'notfound') {
+ return (
+ <div className="max-w-7xl mx-auto pb-28 space-y-4 animate-in fade-in duration-200">
+ <button
+ type="button"
+ onClick={onBack}
+ className="text-xs font-semibold text-text-tertiary hover:text-text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-info rounded"
+ >
+ ← Back to Vendor Portfolio
+ </button>
+ <div role="alert" className="rounded-xl border border-border bg-surface px-5 py-6 text-center">
+ <p className="text-sm font-bold text-text-primary m-0">Vendor not found</p>
+ <p className="text-sm text-text-secondary mt-1 m-0">{resolution.message}</p>
+ </div>
+ </div>
+ );
+ }
+ return <FixtureVendorDetailWorkspace vendorId={vendorId} onBack={onBack} />;
+}
+
+function FixtureVendorDetailWorkspace({ vendorId = 'vend-001', onBack }: VendorDetailProps) {
  const [isActionsOpen, setIsActionsOpen] = useState(false);
  const [isOffboardOpen, setIsOffboardOpen] = useState(false);
  const [offboardChecklist, setOffboardChecklist] = useState({ accessRevoked: false, dataDestroyed: false, contractsClosed: false });
