@@ -21,13 +21,13 @@ Last updated: 2026-11-13. Update this file whenever a milestone lands or a PR me
 
 ## What is real but NOT yet on main (open PRs awaiting founder review; #5 and #6 are CI-green)
 
-- **PR #5** (`feat/ai-foundation`, head `47ae3c4`): AI model layer — provider
+- **PR #5** (`feat/ai-foundation`, head `0b1698c`): AI model layer — provider
   abstraction, real Anthropic Messages client (structured output via a forced tool
   call), fail-closed gateway, schema validator; 20 tests; CI green (136). Also carries
   `backend/docs/ai/AI-FOUNDATION-DESIGN.md`, the platform design. **No live model call
   has ever been made** — the founder's Anthropic API key (via Secure Vault) is pending.
 - **PR #7** (`docs/project-continuity`): this continuity document set itself.
-- **PR #6** (`feat/vendors-data-slice`, head `13cadf3`): vendors data slice — V12
+- **PR #6** (`feat/vendors-data-slice`, head `f3dea14`): vendors data slice — V12
   migration, repository/service, REST at `/api/v1/vendors`; 13 tests; CI green (129 on
   that branch). First domain table in the platform.
 
