@@ -17,7 +17,7 @@ Last updated: 2026-11-13. Update this file whenever a milestone lands or a PR me
   `/api/v1/agents`. One deterministic agent (`foundation.echo`) and three mock tools.
 - **Tenant isolation pattern** (the house standard): NOLOGIN owner roles hold tables,
   the app role has no direct table access, all access via SECURITY DEFINER functions
-  with the V6 fail-closed tenant guard, FORCE ROW LEVEL SECURITY everywhere.
+  with the V6 fail-closed tenant guard, FORCE ROW LEVEL SECURITY on the guarded tables (agent tables, audit events, and each domain slice as it lands; the identity directory tables predate the pattern and have no RLS).
 
 ## What is real but NOT yet on main (open PRs, both CI-green, awaiting founder review)
 
@@ -26,6 +26,7 @@ Last updated: 2026-11-13. Update this file whenever a milestone lands or a PR me
   call), fail-closed gateway, schema validator; 20 tests; CI green (136). Also carries
   `backend/docs/ai/AI-FOUNDATION-DESIGN.md`, the platform design. **No live model call
   has ever been made** — the founder's Anthropic API key (via Secure Vault) is pending.
+- **PR #7** (`docs/project-continuity`): this continuity document set itself.
 - **PR #6** (`feat/vendors-data-slice`, head `13cadf3`): vendors data slice — V12
   migration, repository/service, REST at `/api/v1/vendors`; 13 tests; CI green (129 on
   that branch). First domain table in the platform.
@@ -39,14 +40,14 @@ Last updated: 2026-11-13. Update this file whenever a milestone lands or a PR me
 - No domain tables exist beyond vendors-in-PR: no evidence/documents, assessments,
   findings, remediation, or dependency graph yet.
 - The engine has **no scheduler and no system-initiated runs** — everything proactive
-  (monitoring, Foresight) is gated on that prerequisite (roadmap step 7).
+  (monitoring, Foresight) is gated on that prerequisite (roadmap step 9).
 - No external write tool exists, by design (see ARCHITECTURE_DECISIONS.md, the gate).
 
 ## Paper-only work (do not code without founder authorisation)
 
 - **Logto identity migration (M1)**: spec v2.8 complete, M0 verified live; M1 is NOT
   authorised. Material open point: API resources require Logto Pro in production
-  (decision D12 gates M3 only).
+  (Logto-spec decision D12 gates M3 only).
 - **Score direction**: frontend score semantics vs backend LT-VRM semantics conflict;
   the conversion memo and the ADR disagree. Founder decision pending; no score wiring
   until then. LLM involvement in scores is prohibited regardless.

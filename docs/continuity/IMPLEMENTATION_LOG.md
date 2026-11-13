@@ -18,9 +18,9 @@ GitHub CI is the test venue.
 
 | PR | Content | Evidence |
 |----|---------|----------|
-| #5 `feat/ai-foundation` (head `47ae3c4`) | AI model layer: provider abstraction, Anthropic client with forced-tool structured output, fail-closed gateway, schema validator; + platform design doc | CI green, 136 tests. Two fix rounds recorded on the PR (bean wiring; Jackson 2→3) |
-| #6 `feat/vendors-data-slice` (head `13cadf3`) | Vendors data slice: V12 + repository/service + REST `/api/v1/vendors`, 13 tests | CI green, 129 tests on branch. Two fix rounds recorded on the PR (grant-signature arity; api→infrastructure architecture rule) |
-| #7 `docs/project-continuity` | This continuity document set | Docs only |
+| #5 `feat/ai-foundation` (head `47ae3c4`) | AI model layer: provider abstraction, Anthropic client with forced-tool structured output, fail-closed gateway, schema validator; + platform design doc | CI green, 136 tests. Two build fix rounds recorded on the PR (bean wiring; Jackson 2→3). Independent review 2026-11-13: merge-ready-with-fixes (1 major: HTTP status classification for the retry contract; 6 minors) — correction pass authorised by the founder |
+| #6 `feat/vendors-data-slice` (head `13cadf3`) | Vendors data slice: V12 + repository/service + REST `/api/v1/vendors`, 13 tests | CI green, 129 tests on branch. Two build fix rounds recorded on the PR (grant-signature arity; api→infrastructure architecture rule). Independent review 2026-11-13: merge-ready-with-fixes (2 majors: update-path 500s on client errors; create-path violation misreporting; 7 minors) — correction pass authorised by the founder |
+| #7 `docs/project-continuity` | This continuity document set | Docs only. Independent audit 2026-11-13: accurate and substantially complete; 9 precision findings corrected in the founder-authorised fix pass |
 
 ## Known limitations carried openly
 

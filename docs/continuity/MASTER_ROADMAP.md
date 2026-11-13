@@ -39,7 +39,9 @@ Status key: ✅ done · 🔵 in review · ⬜ next · 🔒 gated (condition name
 15. ⬜ **Preventive Action Planner agent** — cross-module plan composition,
     draft-only tools, ModeGate approvals.
 16. ⬜ **Independent AI Verification Agent** — isolated READ-only verification runs;
-    verdicts recorded in the audit chain; catch rates published internally.
+    verdicts recorded in the audit chain; catch rates published internally first.
+    External publication of measured agent accuracy is the NORTH_STAR ambition and
+    follows once the verification layer itself is proven.
 17. 🔒 **Numerical forecasting** — only when labelled outcome volume, baselines,
     calibration and drift monitoring exist, and the founder approves the methodology.
 18. 🔒 **External communications / write tools** — only per provider, after that

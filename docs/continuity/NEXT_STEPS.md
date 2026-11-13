@@ -9,7 +9,7 @@ Last updated: 2026-11-13. One queue, in order. Founder actions are marked ◆.
 2. ◆ **Anthropic API key via Secure Vault** — gates the first live model call and
    the live evaluation run (roadmap step 5's live half). Nothing else waits on it.
 3. ◆ When ready (no engineering is blocked today): score-direction decision (O1),
-   Logto M1 authorisation + D12 (O2), ZDR applications (O4).
+   Logto M1 authorisation + Logto-spec D12 (O2), ZDR applications (O4).
 
 ## Engineering queue (in roadmap order)
 
