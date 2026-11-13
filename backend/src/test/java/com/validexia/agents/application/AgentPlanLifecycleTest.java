@@ -13,6 +13,7 @@ import com.validexia.agents.infrastructure.AgentsRepository.AgentTaskRow;
 import com.validexia.agents.infrastructure.AgentsRepository.ClaimOutcome;
 import com.validexia.agents.infrastructure.AgentsRepository.PlanTask;
 import com.validexia.audit.AuditService;
+import com.validexia.platform.tenancy.TenantContext;
 import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
 import java.sql.Connection;
@@ -1048,7 +1049,8 @@ class AgentPlanLifecycleTest {
     CountingTool tool = new CountingTool();
     ToolRun run =
         new ToolRun(
-            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}");
+            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}",
+            UUID.randomUUID(), UUID.randomUUID());
     run.requestInterrupt();
     assertThrows(ToolRun.NotStartedException.class, run::call);
     assertEquals(0, tool.entries.get());
@@ -1060,7 +1062,8 @@ class AgentPlanLifecycleTest {
     LatchTool tool = new LatchTool();
     ToolRun run =
         new ToolRun(
-            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}");
+            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}",
+            UUID.randomUUID(), UUID.randomUUID());
     Thread thread =
         new Thread(
             () -> {
@@ -1088,7 +1091,8 @@ class AgentPlanLifecycleTest {
       CountingTool tool = new CountingTool();
       ToolRun run =
           new ToolRun(
-              tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}");
+              tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}",
+            UUID.randomUUID(), UUID.randomUUID());
       CountDownLatch gate = new CountDownLatch(1);
       AtomicReference<Throwable> callError = new AtomicReference<>();
       Thread caller =
@@ -1556,5 +1560,45 @@ class AgentPlanLifecycleTest {
     assertTrue(
         repository.claimTask(tenantId, userId, runId, task.id(), "exec-2", 30).claimed(),
         "an expired claim is takeable by another executor");
+  }
+
+  /**
+   * The run's tenant is published onto the tool thread for the duration of the invocation and
+   * cleared afterwards. A tenant-scoped tool can therefore reach tenant data through the same
+   * fail-closed context as the rest of the stack, and a pooled thread never leaks the value into
+   * its next assignment.
+   */
+  @Test
+  void toolRunPublishesTheRunsTenantAndClearsItAfterwards() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    AtomicReference<String> seenTenant = new AtomicReference<>();
+    AtomicReference<String> seenUser = new AtomicReference<>();
+    ToolHandler tool =
+        new DefinedTool(
+            "test.tenant_context",
+            RiskClass.READ,
+            input -> {
+              seenTenant.set(
+                  TenantContext.current().map(TenantContext.Values::tenantId).orElse(null));
+              seenUser.set(TenantContext.current().map(TenantContext.Values::userId).orElse(null));
+              return "{}";
+            });
+
+    ToolRun run =
+        new ToolRun(
+            tool,
+            new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1),
+            "{}",
+            tenantId,
+            userId);
+
+    assertTrue(TenantContext.current().isEmpty(), "the caller must not carry a tenant context");
+    assertEquals("{}", run.call());
+    assertEquals(tenantId.toString(), seenTenant.get(), "the tool saw the run's tenant");
+    assertEquals(userId.toString(), seenUser.get(), "the tool saw the run's user");
+    assertTrue(
+        TenantContext.current().isEmpty(),
+        "the tool thread's context must be cleared after the invocation");
   }
 }
