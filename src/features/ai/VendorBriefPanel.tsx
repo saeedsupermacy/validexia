@@ -30,7 +30,20 @@ function asStringList(value: unknown): string[] {
 }
 
 function parseFact(value: unknown): BriefFact | null {
- if (typeof value === 'string') return value.trim() ? { text: value } : null;
+ if (typeof value === 'string') {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  // The backend encodes each keyFact as a JSON object string
+  // ({"fact", "source_kind", "source", "value"}); unwrap it when present.
+  if (trimmed.startsWith('{')) {
+   try {
+    return parseFact(JSON.parse(trimmed));
+   } catch {
+    /* not JSON — fall through and treat as plain text */
+   }
+  }
+  return { text: trimmed };
+ }
  if (value && typeof value === 'object') {
  const o = value as Record<string, unknown>;
  const text = [o.fact, o.text, o.value, o.statement].find(v => typeof v === 'string' && v.trim());
@@ -41,11 +54,8 @@ function parseFact(value: unknown): BriefFact | null {
  return null;
 }
 
-/** Parse the run's result JSON into a brief; returns null when it is not a brief-shaped object. */
-function parseBrief(result: string | null): ParsedBrief | null {
- if (!result) return null;
- let parsed: unknown;
- try { parsed = JSON.parse(result); } catch { return null; }
+/** Parse a brief-shaped object; returns null when it is not brief-shaped. */
+function parseBriefObject(parsed: unknown): ParsedBrief | null {
  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
  const o = parsed as Record<string, unknown>;
  const keyFacts = Array.isArray(o.keyFacts)
@@ -59,6 +69,34 @@ function parseBrief(result: string | null): ParsedBrief | null {
  abstained: o.abstained === true,
  abstentionReason: typeof o.abstentionReason === 'string' ? o.abstentionReason : undefined,
  };
+}
+
+/**
+ * Extract the brief from a finished run. The engine's run-level `result` is
+ * only a task-count summary ({"tasksSucceeded": N}); the vendor.intelligence
+ * brief itself is the final task's `output` — a provenance envelope
+ * ({schemaVersion, agentKey, vendorId, inputHash, model, brief}) whose
+ * `brief` member is the brief. Returns the parsed brief plus the raw string
+ * to show when the output is not brief-shaped.
+ */
+function briefFromRun(run: AgentRun): { brief: ParsedBrief | null; raw: string | null } {
+ const candidates = [...run.tasks]
+  .filter(t => t.output)
+  .sort((a, b) => a.seq - b.seq);
+ const briefTask =
+  candidates.filter(t => t.toolKey === 'vendor.intelligence.brief').pop() ??
+  candidates.pop();
+ const raw = briefTask?.output ?? run.result;
+ if (!raw) return { brief: null, raw: null };
+ let parsed: unknown;
+ try { parsed = JSON.parse(raw); } catch { return { brief: null, raw }; }
+ if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+  const envelope = parsed as Record<string, unknown>;
+  if (envelope.brief && typeof envelope.brief === 'object') {
+   return { brief: parseBriefObject(envelope.brief), raw };
+  }
+ }
+ return { brief: parseBriefObject(parsed), raw };
 }
 
 const TERMINAL: ReadonlySet<string> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'WAITING_APPROVAL']);
@@ -134,7 +172,8 @@ export function VendorBriefPanel({ initialVendorId }: { initialVendorId?: string
  }
  };
 
- const brief = run && run.state === 'SUCCEEDED' ? parseBrief(run.result) : null;
+ const briefOutcome = run && run.state === 'SUCCEEDED' ? briefFromRun(run) : null;
+ const brief = briefOutcome?.brief ?? null;
  const isRunning = !!run && (run.state === 'PENDING' || run.state === 'RUNNING');
 
  return (
@@ -267,8 +306,8 @@ export function VendorBriefPanel({ initialVendorId }: { initialVendorId?: string
  <div>
  <p className="text-sm font-bold text-text-primary m-0">The run finished, but its result is not a valid brief</p>
  <p className="text-sm text-text-secondary mt-0.5 m-0">The result is shown raw below and is NOT rendered as a brief.</p>
- {run.result && (
- <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-surface border border-border p-3 text-[11px] text-text-secondary whitespace-pre-wrap">{run.result}</pre>
+ {briefOutcome?.raw && (
+ <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-surface border border-border p-3 text-[11px] text-text-secondary whitespace-pre-wrap">{briefOutcome.raw}</pre>
  )}
  </div>
  </div>
