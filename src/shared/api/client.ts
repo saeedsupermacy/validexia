@@ -1,4 +1,4 @@
-import { API_BASE_URL, API_TIMEOUT } from './config';
+import { API_BASE_URL, API_TIMEOUT, getTenantId } from './config';
 import { normalizeApiError } from './errorHandler';
 
 interface RequestOptions extends RequestInit {
@@ -10,8 +10,13 @@ interface RequestOptions extends RequestInit {
 
 class HttpClient {
  private getAuthHeader(): Record<string, string> {
- const token = localStorage.getItem('validexia_auth_token');
- return token ? { Authorization: `Bearer ${token}` } : {};
+   const token = localStorage.getItem('validexia_auth_token');
+   return token ? { Authorization: `Bearer ${token}` } : {};
+ }
+
+ private getTenantHeader(): Record<string, string> {
+   const tenantId = getTenantId();
+   return tenantId ? { 'X-Tenant-Id': tenantId } : {};
  }
 
  private async handleResponse<T>(response: Response): Promise<T> {
@@ -51,6 +56,7 @@ class HttpClient {
  'Content-Type': 'application/json',
  'Accept': 'application/json',
  ...this.getAuthHeader(),
+ ...this.getTenantHeader(),
  ...(fetchOptions.headers as Record<string, string>),
  };
 
