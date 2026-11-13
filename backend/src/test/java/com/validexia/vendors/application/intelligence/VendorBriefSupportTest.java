@@ -47,11 +47,11 @@ class VendorBriefSupportTest {
             + "\"}");
   }
 
-  private String fact(String fact, String sourceKind, String source, String value) {
+  private String fact(String fact, String source_kind, String source, String value) {
     return "\"{\\\"fact\\\":\\\""
         + fact
-        + "\\\",\\\"sourceKind\\\":\\\""
-        + sourceKind
+        + "\\\",\\\"source_kind\\\":\\\""
+        + source_kind
         + "\\\",\\\"source\\\":\\\""
         + source
         + "\\\",\\\"value\\\":\\\""
@@ -130,7 +130,7 @@ class VendorBriefSupportTest {
         assertThrows(
             ModelProviderException.class,
             () -> VendorBriefSupport.validateBrief(mapper, brief, profile()));
-    assertTrue(thrown.getMessage().contains("sourceKind"));
+    assertTrue(thrown.getMessage().contains("source_kind"));
   }
 
   @Test
