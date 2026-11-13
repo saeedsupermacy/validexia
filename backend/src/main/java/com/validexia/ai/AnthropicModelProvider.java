@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -45,6 +46,7 @@ public class AnthropicModelProvider implements ModelProvider {
   private final ObjectMapper mapper;
   private final Transport transport;
 
+  @Autowired
   public AnthropicModelProvider(AiProperties properties, ObjectMapper mapper) {
     this(properties, mapper, httpTransport(properties));
   }
