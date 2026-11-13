@@ -91,8 +91,12 @@ ALTER TABLE public.vendor_dependent_systems OWNER TO validexia_vendors_owner;
 -- The create/update functions verify that a named owner actually belongs
 -- to the tenant (see the membership check in those functions). That read
 -- is the one cross-module table access this slice needs; it is granted to
--- the owner role only, never to the application role.
+-- the owner role only, never to the application role. The functions also
+-- read public.users for the existence half of that check (a nonexistent
+-- owner must surface as the owner FK violation, not as a membership
+-- failure), so the same owner-only grant covers it.
 GRANT SELECT ON public.memberships TO validexia_vendors_owner;
+GRANT SELECT ON public.users TO validexia_vendors_owner;
 
 ALTER TABLE public.vendors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vendors FORCE ROW LEVEL SECURITY;
@@ -127,9 +131,11 @@ BEGIN
     IF pg_catalog.current_setting('app.tenant_id', true) IS DISTINCT FROM p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
-    IF p_owner_user_id IS NOT NULL AND NOT EXISTS (
-        SELECT 1 FROM public.memberships m
-        WHERE m.user_id = p_owner_user_id AND m.tenant_id = p_tenant_id) THEN
+    IF p_owner_user_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM public.users u WHERE u.id = p_owner_user_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM public.memberships m
+            WHERE m.user_id = p_owner_user_id AND m.tenant_id = p_tenant_id) THEN
         RAISE EXCEPTION 'owner is not a member of the tenant'
             USING ERRCODE = 'foreign_key_violation';
     END IF;
@@ -162,9 +168,11 @@ BEGIN
     IF pg_catalog.current_setting('app.tenant_id', true) IS DISTINCT FROM p_tenant_id::text THEN
         RAISE EXCEPTION 'tenant context mismatch';
     END IF;
-    IF p_owner_user_id IS NOT NULL AND NOT EXISTS (
-        SELECT 1 FROM public.memberships m
-        WHERE m.user_id = p_owner_user_id AND m.tenant_id = p_tenant_id) THEN
+    IF p_owner_user_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM public.users u WHERE u.id = p_owner_user_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM public.memberships m
+            WHERE m.user_id = p_owner_user_id AND m.tenant_id = p_tenant_id) THEN
         RAISE EXCEPTION 'owner is not a member of the tenant'
             USING ERRCODE = 'foreign_key_violation';
     END IF;
