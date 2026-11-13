@@ -1,14 +1,13 @@
 # ADR-001: AI agent foundation — custom orchestration on Spring + PostgreSQL
 
-Status: implemented as the first vertical slice of the AI Agent Foundation milestone
-(founder-authorised 2026-11-11). Date: 2026-11-11.
+Status: Accepted and implemented (first vertical slice). Date: 2026-11-11.
 
 ## Context
 
 Validexia's core vision is an AI-native autonomous TPRM platform: multiple specialised agents,
 a central orchestration layer, three autonomy modes (Assist / Approval / Autonomous), human
 approval for sensitive actions, resumable execution, complete audit, and strict tenant
-isolation. The existing backend (M02-1) provides identity, tenancy (PostgreSQL RLS + SECURITY
+isolation. The existing backend provides identity, tenancy (PostgreSQL RLS + SECURITY
 DEFINER functions, app role with zero direct grants) and a DB-enforced hash-chain audit trail.
 
 ## Decision

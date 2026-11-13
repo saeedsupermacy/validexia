@@ -1,13 +1,23 @@
 # Validexia Backend
 
-The new Validexia backend, built from scratch on **Java 21 + Spring Boot 4.1.2 + PostgreSQL**
-(the stack named in the founder's YC application). The React frontend is a separate project and
-is not touched by this repository. The legacy PHP/LT-VRM codebase is not used, extended, or
-depended on.
+The backend service for Validexia, built on **Java 21 + Spring Boot 4.1.2 +
+PostgreSQL**. The web interface lives at the repository root and calls this
+service over its REST API.
 
-This repository currently contains **Mission M02-1 (v2.6)**: the foundation only — project
-scaffold, Clerk-based identity, tenant isolation via PostgreSQL Row-Level Security, and a
-tamper-evident audit log. No product workspaces, vendors, scoring, or AI features live here yet.
+The service currently provides the platform foundation:
+
+- **Identity and tenancy** — Clerk-based sign-in, a PostgreSQL identity
+  directory, and tenant isolation via row-level security.
+- **Audit** — a tamper-evident, hash-chained audit log enforced in the
+  database.
+- **Agent engine** — registered agent definitions, planned runs, a tool
+  registry with risk classes, three autonomy modes (Assist, Approval,
+  Autonomous), and human approval for sensitive actions. The engine ships with
+  one reference definition (`foundation.echo`) and mock tools; no tool that
+  writes to an external system exists yet, by design.
+
+Domain features (vendors, evidence, assessments, scoring) are not part of this
+service yet; they are built on top of this foundation.
 
 ## Security model (summary)
 
@@ -22,7 +32,9 @@ tamper-evident audit log. No product workspaces, vendors, scoring, or AI feature
 - **Tenant isolation — RLS.** A tenant-aware transaction manager issues
   `set_config('app.tenant_id', …, true)` + `set_config('app.user_id', …, true)` as the first
   statements of every transaction. Tenant selection is per-request (`X-Tenant-Id` header) and
-  membership is re-verified on every request.
+  membership is re-verified on every request. The agent tables apply the same pattern:
+  tenant guards fail closed when the tenant context is missing or does not match, and
+  row-level security is forced on the guarded tables.
 - **Lifecycle — payload-driven.** Clerk has no ban/lock webhook events; ban/lock/deprovisioned
   state arrives via `user.updated` payloads and is applied per-flag with timestamp ordering
   (independent flags, restrictive tie-breaks, an epoch column that kills pre-transition tokens).
@@ -31,6 +43,13 @@ tamper-evident audit log. No product workspaces, vendors, scoring, or AI feature
 - **Audit — database-enforced hash chain.** `audit_events` is append-only for the app role; a
   `SECURITY DEFINER` trigger owned by a dedicated role assigns sequence numbers and hashes
   (canonical serialization, SHA-256). Tamper-**evident**, not tamper-proof.
+- **Agent execution — gated by risk class and mode.** Every tool declares a risk class
+  (READ, ROUTINE_WRITE, SENSITIVE_WRITE). Read tools run in any mode; routine writes run
+  automatically only in Autonomous mode; sensitive writes always require a human approval,
+  in every mode. Runs are created idempotently, execute a plan persisted atomically with
+  the run, and can park for approval and resume. The design and its concurrency guarantees
+  are recorded in `docs/agents/ADR-001-agent-foundation.md` and
+  `docs/agents/AGENT-ENGINE-CONCURRENCY-AUDIT.md`.
 
 ## Prerequisites
 
@@ -42,8 +61,8 @@ tamper-evident audit log. No product workspaces, vendors, scoring, or AI feature
 ## Gradle wrapper
 
 `gradle/wrapper/gradle-wrapper.jar` and `gradle-wrapper.properties` are committed, but the
-`gradlew` / `gradlew.bat` scripts are **not yet** (they could not be generated in the sandbox
-where this mission was implemented). Generate and commit them from any machine with Gradle:
+`gradlew` / `gradlew.bat` scripts are **not yet**. Generate and commit them from any machine
+with Gradle:
 
 ```bash
 gradle wrapper --gradle-version 9.1.0
@@ -77,8 +96,8 @@ reach `docker compose`. (A `backend/.env` file feeds compose only, never the
 app, so it is not a substitute for exporting.)
 
 ```bash
-export DB_PASSWORD=${DB_PASSWORD:-validexia-app-dev}
-export FLYWAY_PASSWORD=${FLYWAY_PASSWORD:-validexia-migrator-dev}
+export DB_PASSWORD=choose-a-local-password
+export FLYWAY_PASSWORD=choose-a-local-password
 docker compose up -d db        # postgres:17 + dev roles (docker/init/01-roles.sh)
 FLYWAY_USER=validexia_migrator \
 CLERK_ISSUER=<your instance> CLERK_JWKS_URL=<your instance>/.well-known/jwks.json \
@@ -98,7 +117,7 @@ environments without Docker, the same suite can run against an external, disposa
 
 ```bash
 VALIDEXIA_TEST_DB_URL=jdbc:postgresql://localhost:5432/validexia_test_scratch \
-VALIDEXIA_TEST_DB_USER=postgres VALIDEXIA_TEST_DB_PASSWORD=... \
+VALIDEXIA_TEST_DB_USER=postgres VALIDEXIA_TEST_DB_PASSWORD=<password> \
 gradle test
 ```
 
@@ -110,7 +129,7 @@ gradle test
    `validexia_directory_owner`, and `validexia_audit_owner` (both NOLOGIN), and grants the
    migrator membership in both owner roles so migrations can transfer ownership. The migration
    scripts create any missing roles idempotently but never set passwords.
-2. **Clerk instance.** Create the Clerk application (founder action), configure the webhook
+2. **Clerk instance.** Create the Clerk application, configure the webhook
    endpoint for `user.created`, `user.updated`, `user.deleted`, `user.merged`,
    `session.created`, `session.ended`, `session.removed`, `session.revoked`, and set the env
    vars above. **Empirical check required at setup:** ban and lock a test user in the Dashboard
@@ -120,7 +139,7 @@ gradle test
    Testing tab for the test suite.
 3. **No Docker requirement in production.** Testcontainers is a test-only concern.
 
-## Endpoints (M02-1)
+## Endpoints
 
 | Method & path | Auth | Purpose |
 | --- | --- | --- |
@@ -129,3 +148,12 @@ gradle test
 | `POST /api/v1/session/active-tenant` | Clerk token | Validate/select the active tenant (audited) |
 | `POST /api/v1/auth/logout` | Clerk token | Denylist the session locally + revoke at Clerk |
 | `POST /api/v1/webhooks/clerk` | Svix signature | Clerk lifecycle webhooks |
+| `POST /api/v1/agents/definitions` | Clerk token | Register an agent definition |
+| `GET /api/v1/agents/definitions` | Clerk token | List agent definitions visible to the tenant |
+| `GET /api/v1/agents/tools` | Clerk token | List registered tools and their risk classes |
+| `POST /api/v1/agents/runs` | Clerk token | Create and execute an agent run (idempotent) |
+| `GET /api/v1/agents/runs` | Clerk token | List runs |
+| `GET /api/v1/agents/runs/{runId}` | Clerk token | One run with its tasks |
+| `POST /api/v1/agents/runs/{runId}/resume` | Clerk token | Resume a parked run |
+| `GET /api/v1/agents/approvals` | Clerk token | List pending approvals |
+| `POST /api/v1/agents/approvals/{approvalId}/decision` | Clerk token | Approve or reject a parked step |

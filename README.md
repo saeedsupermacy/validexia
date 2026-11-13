@@ -1,25 +1,68 @@
-# Validexia — Vendor Risk Management Frontend
+# Validexia
 
-Interactive frontend prototype for third-party risk management (TPRM).
-React 19 + Vite + TypeScript + Tailwind CSS.
+Validexia is a third-party risk management (TPRM) platform. It helps security and
+compliance teams keep track of their vendors, the evidence those vendors provide,
+the risks that follow from relying on them, and the work needed to reduce those
+risks.
 
-## Current status: demo prototype
+The platform is under active development. This README describes what is in the
+repository today and, separately, where the product is going. The two are not
+the same thing yet, and we keep them separate on purpose.
 
-This is a **frontend demo**, not a production system. It uses synthetic data and
-browser-local state. See [SCORE_CONTRACT.md](./SCORE_CONTRACT.md) for risk-score semantics.
+## What is in this repository
 
-**What works:** full UI across 17 workspaces (vendors, assessments, evidence,
-remediation, monitoring, fourth-parties, decisions, reports, vendor portal, etc.),
-deep-linking navigation, filtering, CSV exports, demo-mode persistence via localStorage.
+**Web interface** (repository root) — a React 19 + Vite + TypeScript + Tailwind
+CSS application covering the main TPRM work areas: vendors, assessments,
+evidence, remediation, monitoring, fourth parties, decisions, and reports. It
+currently runs on demonstration data stored in the browser, marked with a
+**Demo** badge in the top bar. Workspaces labelled "Simulated" (including the
+AI Workbench) use pre-scripted responses, not live systems.
 
-**What needs a backend:** authentication, multi-tenant data isolation, persistent
-server-side records, real monitoring feeds, real AI analysis, tamper-proof audit log,
-file storage, email invitations.
+**Backend** (`backend/`) — a Java 21 + Spring Boot + PostgreSQL service that
+provides the platform's foundation:
 
-A yellow **Demo** badge in the topbar indicates demo mode. Features labelled
-"Simulated" (AI Workbench, Monitoring feed) use pre-scripted data, not live systems.
+- Identity, sessions, and multi-tenant data isolation (PostgreSQL row-level
+  security; the application role has no direct table access).
+- A tamper-evident, hash-chained audit log.
+- An agent execution engine: registered agent definitions, planned runs, a
+  tool registry with risk classes, three autonomy modes (Assist, Approval,
+  Autonomous), and human approval for sensitive actions. See
+  `backend/docs/agents/ADR-001-agent-foundation.md`.
 
-## Setup
+Connecting the interface to the backend, and building the domain data model
+(vendors, evidence, assessments) on top of this foundation, is the work
+currently in progress.
+
+## Direction
+
+Validexia is being built as an AI-assisted TPRM platform, with these long-term
+goals:
+
+- AI agents that handle routine TPRM work — researching vendors, checking
+  evidence, flagging gaps — under human oversight, with approval required for
+  consequential decisions.
+- Continuous vendor intelligence: ongoing monitoring that surfaces emerging
+  vendor risk early (Validexia Foresight).
+- A Living Evidence Graph connecting vendors, services, dependencies,
+  evidence, and risk signals, so a change in one place shows its effects
+  elsewhere.
+- A Risk Flight Simulator for exploring how a risk could spread across vendor
+  relationships before it does.
+
+These are design goals, not finished features. Nothing in the current build
+performs live monitoring, AI analysis, or autonomous action against real
+vendor data.
+
+## Repository layout
+
+- `src/` — the web interface (one feature folder per work area under
+  `src/features/`)
+- `backend/` — the backend service (see `backend/README.md` for setup,
+  configuration, and the security model)
+- `backend/docs/` — architecture decision records and engineering audits
+- `SCORE_CONTRACT.md` — the risk-scoring semantics used by the interface
+
+## Running the interface
 
 Requires Node.js 20+.
 
@@ -32,15 +75,13 @@ npx tsc --noEmit # type check
 
 Copy `.env.example` to `.env` and fill in values. Never commit `.env`.
 
-## Project structure
-
-- `src/features/` — one folder per workspace (vendors, evidence, etc.)
-- `src/data/vendors.ts` — canonical vendor dataset + registry (single source of truth)
-- `src/fixtures/` — rich detail overlays for demo vendor pages
-- `src/shared/navigation.ts` — navigation with deep-link params + URL hash sync
-- `src/shared/ui/` — shared components (DeepLinkBanner, etc.)
+For the backend, see `backend/README.md`.
 
 ## Risk scoring
 
-Higher score = higher risk (0–100). See [SCORE_CONTRACT.md](./SCORE_CONTRACT.md).
-**Do not connect a backend score without confirming direction first.**
+In the interface, a higher score means higher risk (0–100). Inherent and
+residual risk are tracked separately, and residual risk is never shown above
+inherent risk. The full semantics are in
+[SCORE_CONTRACT.md](./SCORE_CONTRACT.md). How these scores will be produced and
+reconciled with backend scoring is an open design decision; the backend does
+not currently emit risk scores.
