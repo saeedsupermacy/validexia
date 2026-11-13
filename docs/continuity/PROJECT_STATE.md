@@ -30,13 +30,24 @@ Last updated: 2026-11-13. Update this file whenever a milestone lands or a PR me
 - **PR #6** (`feat/vendors-data-slice`, head `f3dea14`): vendors data slice — V12
   migration, repository/service, REST at `/api/v1/vendors`; 13 tests; CI green (129 on
   that branch). First domain table in the platform.
+- **Vendor Intelligence Brief** (2026-11-13, branches on top of an integration
+  baseline of PR #5 + PR #6 — see IMPLEMENTATION_LOG): the platform's first real
+  end-to-end AI capability. `vendor.profile` READ tool + `vendor.intelligence`
+  specialist on the merged engine; schema- and citation-validated briefs
+  (value-snapshot equality enforced; abstention on thin records); Vendors module
+  wired to the real API and the Workbench running real engine runs. Backend CI
+  green at 198 tests; independently reviewed (all non-negotiables hold; citation
+  integrity is structural, not semantic). **Not merged, not deployed, never run
+  against a live model** (no API key yet).
 
 ## What is NOT real (never claim otherwise)
 
-- The **frontend** (18 modules) runs entirely on TypeScript fixtures and
+- The **deployed frontend** (18 modules) runs entirely on TypeScript fixtures and
   localStorage. Its AI Workbench answers are three hard-coded scripted responses.
-  Uploads never read file bytes. Zero modules have backend support until PR #6 merges
-  and the Vendors module is wired to it (next step).
+  Uploads never read file bytes. On branches (unmerged): the Vendors module is wired
+  to the real API and the Workbench has one real intent — the Vendor Intelligence
+  Brief (above). The other 17 modules and the other Workbench intents remain
+  simulated everywhere, including on those branches.
 - No domain tables exist beyond vendors-in-PR: no evidence/documents, assessments,
   findings, remediation, or dependency graph yet.
 - The engine has **no scheduler and no system-initiated runs** — everything proactive

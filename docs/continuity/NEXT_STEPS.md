@@ -13,16 +13,20 @@ Last updated: 2026-11-13. One queue, in order. Founder actions are marked ◆.
 
 ## Engineering queue (in roadmap order)
 
-1. **Merge follow-through**: after PR #5/#6 merge, re-verify main CI green.
-2. **Frontend Vendors wiring** (completes roadmap step 4): the Vendors module reads
-   and writes the real `/api/v1/vendors` API; fixtures remain only as an explicit
-   offline/demo fallback, labelled as such. Verify against the live Vercel app per
-   the founder's standing instruction.
-3. **Roadmap step 5**: first model-backed READ capability — vendor-summary tool +
-   specialist agent definition + Workbench on real engine runs; stub-provider
-   evaluation harness in CI (the 20-case suite from the model evaluation, adapted).
-4. **Roadmap step 6**: evidence/documents slice design → implementation (V13+),
-   provenance schema first.
+1. **Merge follow-through**: after PR #5/#6 merge, re-verify main CI green, then
+   present the Vendor Intelligence Brief as ONE clean PR against main (the
+   integration branch already contains it: baseline merges + 11 feature commits +
+   2 integration fixes; backend CI 198 green; independently reviewed). Founder
+   merges. ◆
+2. **First live run** (after the Anthropic key, founder action 2): run the brief
+   end-to-end against the real provider locally, run the harness live, and verify
+   the wired Vendors module + Workbench against the live Vercel app per the
+   founder's standing instruction. Until then the capability is stub-proven only.
+3. **Roadmap step 6**: evidence/documents slice design → implementation (V13+),
+   provenance schema first (the brief's `source_kind` enum is the seam: evidence
+   facts join as a second kind, never mixed with record facts).
+4. **Vendor identity increment**: aliases capture + identity resolution (GLEIF),
+   scheduled with roadmap step 10 preparation.
 5. Keep this document set current: state changes land in PROJECT_STATE.md and
    IMPLEMENTATION_LOG.md in the same PR as the work they describe.
 
