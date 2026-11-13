@@ -1,8 +1,8 @@
 # Validexia Backend
 
 The backend service for Validexia, built on **Java 21 + Spring Boot 4.1.2 +
-PostgreSQL**. The web interface lives at the repository root and calls this
-service over its REST API.
+PostgreSQL**. It provides the REST API for the web interface, which lives at
+the repository root; connecting the two is in progress.
 
 The service currently provides the platform foundation:
 
