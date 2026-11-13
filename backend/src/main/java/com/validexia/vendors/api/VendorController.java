@@ -3,7 +3,7 @@ package com.validexia.vendors.api;
 import com.validexia.platform.errors.ApiException;
 import com.validexia.platform.security.RequestContext;
 import com.validexia.vendors.application.VendorData;
-import com.validexia.vendors.infrastructure.VendorsRepository;
+import com.validexia.vendors.application.VendorService;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -83,9 +83,9 @@ public class VendorController {
   public record DependentSystemView(
       UUID id, String name, @Nullable String dataHandled, @Nullable String residency) {}
 
-  private final VendorsRepository vendors;
+  private final VendorService vendors;
 
-  public VendorController(VendorsRepository vendors) {
+  public VendorController(VendorService vendors) {
     this.vendors = vendors;
   }
 

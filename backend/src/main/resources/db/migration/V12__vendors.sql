@@ -119,9 +119,9 @@ BEGIN
     RETURNING id INTO v_id;
     RETURN v_id;
 END $$;
-REVOKE ALL ON FUNCTION public.create_vendor(uuid, text, text, text, text, text, text, text, text, text, text, text, uuid, date, date, boolean) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.create_vendor(uuid, text, text, text, text, text, text, text, text, text, text, text, uuid, date, date, boolean) TO validexia_app;
-ALTER FUNCTION public.create_vendor(uuid, text, text, text, text, text, text, text, text, text, text, text, uuid, date, date, boolean) OWNER TO validexia_vendors_owner;
+REVOKE ALL ON FUNCTION public.create_vendor(uuid, text, text, text, text, text, text, text, text, text, text, uuid, date, date, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_vendor(uuid, text, text, text, text, text, text, text, text, text, text, uuid, date, date, boolean) TO validexia_app;
+ALTER FUNCTION public.create_vendor(uuid, text, text, text, text, text, text, text, text, text, text, uuid, date, date, boolean) OWNER TO validexia_vendors_owner;
 
 CREATE FUNCTION public.update_vendor(
     p_tenant_id uuid, p_vendor_id uuid, p_name text, p_legal_name text, p_lei text,
