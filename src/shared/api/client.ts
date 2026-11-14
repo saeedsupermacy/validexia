@@ -14,6 +14,14 @@ class HttpClient {
  return token ? { Authorization: `Bearer ${token}` } : {};
  }
 
+ private getTenantHeader(): Record<string, string> {
+ // Tenant selection is per-request: the backend re-verifies membership for
+ // the X-Tenant-Id header on every call (ClerkAuthenticationFilter). The
+ // value is established from GET /session by shared/api/session.ts.
+ const tenantId = localStorage.getItem('validexia_tenant_id');
+ return tenantId ? { 'X-Tenant-Id': tenantId } : {};
+ }
+
  private async handleResponse<T>(response: Response): Promise<T> {
  if (response.status === 401) {
  localStorage.removeItem('validexia_auth_token');
@@ -51,6 +59,7 @@ class HttpClient {
  'Content-Type': 'application/json',
  'Accept': 'application/json',
  ...this.getAuthHeader(),
+ ...this.getTenantHeader(),
  ...(fetchOptions.headers as Record<string, string>),
  };
 

@@ -14,6 +14,16 @@ export interface VendorRecord {
   id: string;
   name: string;
   code: string;
+  /** Where this row came from. 'live' rows are real backend records (their
+   *  score/evidence fields are placeholders that the UI must not present as
+   *  real — the API has no scores yet); absent means demo/fixture data. */
+  source?: 'live' | 'demo';
+  /** Real-API identity fields (live rows only; null when not recorded). */
+  legalName?: string | null;
+  lei?: string | null;
+  jurisdiction?: string | null;
+  /** Owner as the API knows it: a user UUID, never a display name. */
+  ownerUserId?: string | null;
   criticality: BusinessCriticality;
   riskLevel: RiskLevel;
   riskScore: number;

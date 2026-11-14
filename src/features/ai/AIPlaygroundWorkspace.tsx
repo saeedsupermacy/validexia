@@ -6,17 +6,22 @@ import { Sparkles } from 'lucide-react';
 import { Card, Eyebrow} from '../../shared/ui/core';
 import { AIContextualMenu } from '../../shared/ui/ai/AIContextualMenu';
 import { AIResponsePanel, AIResponseData } from '../../shared/ui/ai/AIResponsePanel';
+import { VendorBriefPanel } from './VendorBriefPanel';
 import { NetworkErrorBanner, PermissionErrorModal, ExpiredSessionModal } from '../../shared/ui/ErrorStates';
 import { navigateTo } from '../../shared/navigation';
 
 export function AIPlaygroundWorkspace() {
  const [activeResponse, setActiveResponse] = useState<AIResponseData | null>(null);
  const [deepLink, setDeepLink] = useState<string | null>(null);
+ const [briefVendorId, setBriefVendorId] = useState<string | undefined>(undefined);
  useEffect(() => {
  const params = getNavParams();
  if (params.vendorName && typeof params.vendorName === 'string') {
  setDeepLink(params.vendorName as string);
  clearNavParams();
+ }
+ if (params.vendorId && typeof params.vendorId === 'string') {
+ setBriefVendorId(params.vendorId as string);
  }
  }, []);
  const [isProcessing, setIsProcessing] = useState(false);
@@ -106,7 +111,7 @@ export function AIPlaygroundWorkspace() {
  <h1 className="text-page-title flex items-center gap-3">Defensible AI Workbench & Response Panel
  <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-status-warning/10 text-status-warning border border-status-warning/20">Simulated</span>
  </h1>
- <p className="text-xs text-text-tertiary mt-1">Demo mode: responses are pre-scripted examples, not live AI analysis.</p>
+ <p className="text-xs text-text-tertiary mt-1">The three panels below are pre-scripted demo examples, not live AI analysis. The Vendor Intelligence Brief at the bottom runs on the real AgentEngine.</p>
  {deepLink && (
  <div className="mt-3">
  <DeepLinkBanner
@@ -187,6 +192,8 @@ export function AIPlaygroundWorkspace() {
  </div>
 
  </div>
+
+ <VendorBriefPanel initialVendorId={briefVendorId} />
  </div>
  );
 }
