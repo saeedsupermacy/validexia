@@ -18,8 +18,8 @@ import org.jspecify.annotations.Nullable;
  *   <li>the cited page must have been supplied as evidence;
  *   <li>the page's stored SHA-256 must match the hash recomputed from the supplied page text, so
  *       the page itself is intact and is the page the caller meant;
- *   <li>the quote must appear verbatim in that page text (whitespace-normalized, so PDF
- *       extraction line breaks cannot manufacture a miss);
+ *   <li>the quote must appear verbatim in that page text (whitespace-normalized, so PDF extraction
+ *       line breaks cannot manufacture a miss);
  *   <li>if the caller supplied a quote hash, it must match the hash recomputed from the quote.
  * </ol>
  *
@@ -54,7 +54,8 @@ public final class CitationVerifier {
     }
     if (passage.text() == null || passage.textSha256() == null || passage.textSha256().isBlank()) {
       return new Result(
-          false, "cited page " + citation.pageNumber() + " was supplied without its text hash",
+          false,
+          "cited page " + citation.pageNumber() + " was supplied without its text hash",
           null);
     }
     if (!sha256Hex(passage.text()).equalsIgnoreCase(passage.textSha256())) {
@@ -64,8 +65,7 @@ public final class CitationVerifier {
           null);
     }
     if (!normalize(passage.text()).contains(normalize(citation.quote()))) {
-      return new Result(
-          false, "cited quote is not present on page " + citation.pageNumber(), null);
+      return new Result(false, "cited quote is not present on page " + citation.pageNumber(), null);
     }
     String computed = sha256Hex(citation.quote());
     if (citation.quoteSha256() != null

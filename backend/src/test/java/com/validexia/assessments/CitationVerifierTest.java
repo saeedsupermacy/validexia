@@ -6,9 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.validexia.assessments.application.CitationVerifier;
 import com.validexia.assessments.application.AssessmentData.EvidencePassage;
 import com.validexia.assessments.application.AssessmentData.EvidenceRef;
+import com.validexia.assessments.application.CitationVerifier;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -65,10 +65,7 @@ class CitationVerifierTest {
   void aCallerSuppliedQuoteHashThatDoesNotMatchTheQuoteIsRejected() {
     EvidenceRef citation =
         new EvidenceRef(
-            null,
-            3,
-            "ISO 27001 certification",
-            CitationVerifier.sha256Hex("some other text"));
+            null, 3, "ISO 27001 certification", CitationVerifier.sha256Hex("some other text"));
 
     CitationVerifier.Result result = CitationVerifier.verify(citation, List.of(page()));
 
@@ -92,7 +89,8 @@ class CitationVerifierTest {
 
     CitationVerifier.Result result = CitationVerifier.verify(citation, List.of(page()));
 
-    assertTrue(result.verified(), "whitespace normalization must not turn a real quote into a miss");
+    assertTrue(
+        result.verified(), "whitespace normalization must not turn a real quote into a miss");
   }
 
   @Test

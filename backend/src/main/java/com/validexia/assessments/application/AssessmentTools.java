@@ -54,39 +54,45 @@ public class AssessmentTools {
   /** Extracts discrete, checkable claims from questionnaire answers. */
   @Bean
   ToolHandler assessmentExtractClaims() {
-    return new DefinedTool("assessment.extract_claims", RiskClass.READ, input -> {
-      JsonNode root = parse(input);
-      UUID assessmentId = requireId(root, "assessmentId");
-      List<ClaimInput> answers = readClaims(root.get("answers"));
-      var result = assessments.extractClaims(tenant(), userId(), assessmentId, answers);
-      ObjectNode out = json.createObjectNode();
-      out.put("assessmentId", result.assessmentId().toString());
-      out.put("claimCount", result.claimCount());
-      out.put("provider", result.provider());
-      out.put("model", result.model());
-      return out.toString();
-    });
+    return new DefinedTool(
+        "assessment.extract_claims",
+        RiskClass.READ,
+        input -> {
+          JsonNode root = parse(input);
+          UUID assessmentId = requireId(root, "assessmentId");
+          List<ClaimInput> answers = readClaims(root.get("answers"));
+          var result = assessments.extractClaims(tenant(), userId(), assessmentId, answers);
+          ObjectNode out = json.createObjectNode();
+          out.put("assessmentId", result.assessmentId().toString());
+          out.put("claimCount", result.claimCount());
+          out.put("provider", result.provider());
+          out.put("model", result.model());
+          return out.toString();
+        });
   }
 
   /** Compares the assessment's claims against supplied evidence passages. */
   @Bean
   ToolHandler assessmentCompareClaims() {
-    return new DefinedTool("assessment.compare_claims", RiskClass.READ, input -> {
-      JsonNode root = parse(input);
-      UUID assessmentId = requireId(root, "assessmentId");
-      List<EvidencePassage> passages = readPassages(root.get("passages"));
-      var result = assessments.compareClaims(tenant(), userId(), assessmentId, passages);
-      ObjectNode out = json.createObjectNode();
-      out.put("assessmentId", result.assessmentId().toString());
-      out.put("findingCount", result.findingCount());
-      out.put("provider", result.provider());
-      out.put("model", result.model());
-      ArrayNode findings = out.putArray("findings");
-      for (var finding : result.findings()) {
-        findings.add(finding.id().toString());
-      }
-      return out.toString();
-    });
+    return new DefinedTool(
+        "assessment.compare_claims",
+        RiskClass.READ,
+        input -> {
+          JsonNode root = parse(input);
+          UUID assessmentId = requireId(root, "assessmentId");
+          List<EvidencePassage> passages = readPassages(root.get("passages"));
+          var result = assessments.compareClaims(tenant(), userId(), assessmentId, passages);
+          ObjectNode out = json.createObjectNode();
+          out.put("assessmentId", result.assessmentId().toString());
+          out.put("findingCount", result.findingCount());
+          out.put("provider", result.provider());
+          out.put("model", result.model());
+          ArrayNode findings = out.putArray("findings");
+          for (var finding : result.findings()) {
+            findings.add(finding.id().toString());
+          }
+          return out.toString();
+        });
   }
 
   /**
@@ -95,24 +101,27 @@ public class AssessmentTools {
    */
   @Bean
   ToolHandler assessmentCreateFinding() {
-    return new DefinedTool("assessment.create_finding", RiskClass.SENSITIVE_WRITE, input -> {
-      JsonNode root = parse(input);
-      UUID assessmentId = requireId(root, "assessmentId");
-      FindingType type = readFindingType(root.get("findingType"));
-      String title = requireText(root, "title");
-      String explanation = requireText(root, "explanation");
-      UUID claimId = optionalId(root, "claimId");
-      EvidenceRef evidence = readEvidence(root.get("evidence"));
-      var findingInput =
-          new FindingInput(assessmentId, claimId, type, title, explanation, evidence);
-      var result = assessments.createFinding(tenant(), userId(), findingInput);
-      ObjectNode out = json.createObjectNode();
-      out.put("findingId", result.findingId().toString());
-      out.put("status", result.status().text());
-      out.put("findingType", result.findingType().text());
-      out.put("severity", result.severity().text());
-      return out.toString();
-    });
+    return new DefinedTool(
+        "assessment.create_finding",
+        RiskClass.SENSITIVE_WRITE,
+        input -> {
+          JsonNode root = parse(input);
+          UUID assessmentId = requireId(root, "assessmentId");
+          FindingType type = readFindingType(root.get("findingType"));
+          String title = requireText(root, "title");
+          String explanation = requireText(root, "explanation");
+          UUID claimId = optionalId(root, "claimId");
+          EvidenceRef evidence = readEvidence(root.get("evidence"));
+          var findingInput =
+              new FindingInput(assessmentId, claimId, type, title, explanation, evidence);
+          var result = assessments.createFinding(tenant(), userId(), findingInput);
+          ObjectNode out = json.createObjectNode();
+          out.put("findingId", result.findingId().toString());
+          out.put("status", result.status().text());
+          out.put("findingType", result.findingType().text());
+          out.put("severity", result.severity().text());
+          return out.toString();
+        });
   }
 
   // -- input reading ---------------------------------------------------------------
@@ -121,7 +130,8 @@ public class AssessmentTools {
     TenantContext.Values values =
         TenantContext.current()
             .orElseThrow(
-                () -> new IllegalStateException("assessment tool invoked without a tenant context"));
+                () ->
+                    new IllegalStateException("assessment tool invoked without a tenant context"));
     if (values.tenantId() == null) {
       throw new IllegalStateException("assessment tool invoked without a tenant context");
     }

@@ -78,8 +78,7 @@ public class AssessmentsRepository implements AssessmentStore {
   }
 
   @Override
-  public List<Assessment> listAssessments(
-      UUID tenantId, UUID userId, @Nullable UUID vendorId) {
+  public List<Assessment> listAssessments(UUID tenantId, UUID userId, @Nullable UUID vendorId) {
     return inTenant(
         tenantId,
         userId,

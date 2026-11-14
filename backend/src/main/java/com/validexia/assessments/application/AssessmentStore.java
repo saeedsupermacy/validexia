@@ -14,15 +14,15 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The persistence port of the assessments slice. {@link AssessmentService} depends on this
- * interface only; {@code AssessmentsRepository} (infrastructure) implements it against the
- * SECURITY DEFINER functions of migration V14. Keeping the port in the application package is what
- * lets the service's rules — deterministic severity, citation verification, approval gating — be
- * tested without a database, and what keeps the controller free of data-access types (D11).
+ * interface only; {@code AssessmentsRepository} (infrastructure) implements it against the SECURITY
+ * DEFINER functions of migration V14. Keeping the port in the application package is what lets the
+ * service's rules — deterministic severity, citation verification, approval gating — be tested
+ * without a database, and what keeps the controller free of data-access types (D11).
  *
- * <p>Every method carries the tenant and the acting user explicitly: the repository sets the
- * tenant context from them before opening its transaction, so the database's fail-closed tenant
- * guard sees the same tenant the caller asked for. A {@code null} {@code userId} is permitted only
- * for reads; mutations that are audited require a real actor.
+ * <p>Every method carries the tenant and the acting user explicitly: the repository sets the tenant
+ * context from them before opening its transaction, so the database's fail-closed tenant guard sees
+ * the same tenant the caller asked for. A {@code null} {@code userId} is permitted only for reads;
+ * mutations that are audited require a real actor.
  */
 public interface AssessmentStore {
 
@@ -44,8 +44,7 @@ public interface AssessmentStore {
 
   /**
    * Creates a finding as {@code Pending Approval} and returns the stored record. The store never
-   * accepts a decided status: approval is a human decision recorded through {@link
-   * #decideFinding}.
+   * accepts a decided status: approval is a human decision recorded through {@link #decideFinding}.
    */
   Finding createFinding(UUID tenantId, UUID userId, FindingInput finding);
 

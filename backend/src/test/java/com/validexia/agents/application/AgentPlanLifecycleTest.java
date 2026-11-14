@@ -1049,8 +1049,11 @@ class AgentPlanLifecycleTest {
     CountingTool tool = new CountingTool();
     ToolRun run =
         new ToolRun(
-            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}",
-            UUID.randomUUID(), UUID.randomUUID());
+            tool,
+            new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1),
+            "{}",
+            UUID.randomUUID(),
+            UUID.randomUUID());
     run.requestInterrupt();
     assertThrows(ToolRun.NotStartedException.class, run::call);
     assertEquals(0, tool.entries.get());
@@ -1062,8 +1065,11 @@ class AgentPlanLifecycleTest {
     LatchTool tool = new LatchTool();
     ToolRun run =
         new ToolRun(
-            tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}",
-            UUID.randomUUID(), UUID.randomUUID());
+            tool,
+            new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1),
+            "{}",
+            UUID.randomUUID(),
+            UUID.randomUUID());
     Thread thread =
         new Thread(
             () -> {
@@ -1091,8 +1097,11 @@ class AgentPlanLifecycleTest {
       CountingTool tool = new CountingTool();
       ToolRun run =
           new ToolRun(
-              tool, new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1), "{}",
-            UUID.randomUUID(), UUID.randomUUID());
+              tool,
+              new ToolInvocation(UUID.randomUUID(), UUID.randomUUID(), "run:1", 1),
+              "{}",
+              UUID.randomUUID(),
+              UUID.randomUUID());
       CountDownLatch gate = new CountDownLatch(1);
       AtomicReference<Throwable> callError = new AtomicReference<>();
       Thread caller =

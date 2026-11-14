@@ -23,8 +23,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Assessment endpoints (migration V14). Everything is scoped to the caller's per-request tenant —
- * the {@code X-Tenant-Id} header verified by the authentication filter — so there is no cross-tenant
- * view.
+ * the {@code X-Tenant-Id} header verified by the authentication filter — so there is no
+ * cross-tenant view.
  *
  * <p>The model-driven endpoints ({@code /extract}, {@code /compare}) call the model layer, which
  * fails closed when no provider is configured: an unconfigured deployment gets an error, never a
@@ -75,13 +75,14 @@ public class AssessmentController {
       @PathVariable UUID assessmentId, @RequestBody StatusRequest request) {
     RequestContext.Context context = RequestContext.require();
     UUID tenantId = requireTenant(context);
-    AssessmentStatus status; //, parsed here so a bad value is a 400, not a 500
+    AssessmentStatus status; // , parsed here so a bad value is a 400, not a 500
     try {
       status = AssessmentStatus.fromText(request.status());
     } catch (IllegalArgumentException e) {
       throw ApiException.validation(e.getMessage());
     }
-    return call(() -> assessments.setAssessmentStatus(tenantId, context.userId(), assessmentId, status));
+    return call(
+        () -> assessments.setAssessmentStatus(tenantId, context.userId(), assessmentId, status));
   }
 
   @GetMapping("/{assessmentId}/claims")
@@ -114,8 +115,7 @@ public class AssessmentController {
     UUID tenantId = requireTenant(context);
     return call(
         () ->
-            assessments.extractClaims(
-                tenantId, context.userId(), assessmentId, request.claims()));
+            assessments.extractClaims(tenantId, context.userId(), assessmentId, request.claims()));
   }
 
   /**

@@ -1,5 +1,9 @@
 package com.validexia.assessments.application;
 
+import com.validexia.ai.ModelProviderException;
+import com.validexia.ai.ModelRequest;
+import com.validexia.ai.ModelResponse;
+import com.validexia.ai.OutputSchema;
 import com.validexia.assessments.application.AssessmentData.Assessment;
 import com.validexia.assessments.application.AssessmentData.AssessmentStatus;
 import com.validexia.assessments.application.AssessmentData.Claim;
@@ -13,11 +17,6 @@ import com.validexia.assessments.application.AssessmentData.Finding;
 import com.validexia.assessments.application.AssessmentData.FindingInput;
 import com.validexia.assessments.application.AssessmentData.FindingStatus;
 import com.validexia.assessments.application.AssessmentData.FindingType;
-import com.validexia.assessments.application.AssessmentData.Severity;
-import com.validexia.ai.ModelProviderException;
-import com.validexia.ai.ModelRequest;
-import com.validexia.ai.ModelResponse;
-import com.validexia.ai.OutputSchema;
 import com.validexia.audit.AuditService;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,8 +32,8 @@ import tools.jackson.databind.JsonNode;
  * repository directly. This is where the slice's rules live:
  *
  * <ul>
- *   <li><b>Deterministic severity (D6)</b>: a finding's severity is a function of its type, never
- *       a value read from a model response or a client request.
+ *   <li><b>Deterministic severity (D6)</b>: a finding's severity is a function of its type, never a
+ *       value read from a model response or a client request.
  *   <li><b>Deterministic citation verification (D6)</b>: every citation a model produces is
  *       re-checked against the supplied page text and hashes by {@link CitationVerifier}. A failed
  *       citation is never stored; the finding is downgraded to {@code Unsupported}.
@@ -48,13 +47,12 @@ import tools.jackson.databind.JsonNode;
  * </ul>
  *
  * <p><b>Chunking and the 20s tool budget.</b> The agent engine gives every tool invocation a soft
- * 20-second budget. The tools here are chunked so one model call stays far inside it:
- * extraction sends at most {@link #EXTRACT_CHUNK_SIZE} questionnaire answers per call, and
- * comparison sends one claim plus at most {@link #COMPARE_MAX_PASSAGES} evidence passages per call
- * (one call per claim). A claim's candidate passages beyond the cap are not considered; the
- * prompt tells the model to answer {@code Missing}/{@code Unsupported} when the supplied passages
- * do not address the claim, so a cap can produce a negative verdict but never a fabricated
- * positive one.
+ * 20-second budget. The tools here are chunked so one model call stays far inside it: extraction
+ * sends at most {@link #EXTRACT_CHUNK_SIZE} questionnaire answers per call, and comparison sends
+ * one claim plus at most {@link #COMPARE_MAX_PASSAGES} evidence passages per call (one call per
+ * claim). A claim's candidate passages beyond the cap are not considered; the prompt tells the
+ * model to answer {@code Missing}/{@code Unsupported} when the supplied passages do not address the
+ * claim, so a cap can produce a negative verdict but never a fabricated positive one.
  */
 @Service
 public class AssessmentService {
@@ -67,9 +65,9 @@ public class AssessmentService {
 
   /**
    * Structured extraction contract. The model layer's schema subset supports flat objects with
-   * primitive fields and string arrays only, so the two parallel arrays are the honest encoding
-   * of "one claim per answer": {@code questions[i]} and {@code answers[i]} belong together, and
-   * the service zips them after checking the lengths match.
+   * primitive fields and string arrays only, so the two parallel arrays are the honest encoding of
+   * "one claim per answer": {@code questions[i]} and {@code answers[i]} belong together, and the
+   * service zips them after checking the lengths match.
    */
   private static final OutputSchema EXTRACT_SCHEMA =
       new OutputSchema(
@@ -90,8 +88,8 @@ public class AssessmentService {
 
   /**
    * D8: document and questionnaire content is DATA, never instructions. Both prompts say so
-   * explicitly; the evaluation suite asserts the directive is present and that a model which
-   * obeys an injected instruction is still overridden by deterministic verification.
+   * explicitly; the evaluation suite asserts the directive is present and that a model which obeys
+   * an injected instruction is still overridden by deterministic verification.
    */
   private static final String EXTRACT_SYSTEM_PROMPT =
       """
@@ -158,13 +156,13 @@ public class AssessmentService {
   }
 
   public Assessment requireAssessment(UUID tenantId, UUID userId, UUID assessmentId) {
-    return store.getAssessment(tenantId, userId, assessmentId)
+    return store
+        .getAssessment(tenantId, userId, assessmentId)
         .orElseThrow(
             () -> new IllegalArgumentException("assessment not found in tenant: " + assessmentId));
   }
 
-  public List<Assessment> listAssessments(
-      UUID tenantId, UUID userId, @Nullable UUID vendorId) {
+  public List<Assessment> listAssessments(UUID tenantId, UUID userId, @Nullable UUID vendorId) {
     return store.listAssessments(tenantId, userId, vendorId);
   }
 
@@ -185,11 +183,7 @@ public class AssessmentService {
         "ASSESSMENT_STATUS_CHANGED",
         "assessment",
         assessmentId.toString(),
-        "{\"from\":\""
-            + before.status().text()
-            + "\",\"to\":\""
-            + status.text()
-            + "\"}");
+        "{\"from\":\"" + before.status().text() + "\",\"to\":\"" + status.text() + "\"}");
     return requireAssessment(tenantId, userId, assessmentId);
   }
 
@@ -219,8 +213,8 @@ public class AssessmentService {
   /**
    * Model-driven extraction: chunks the answers, calls the model once per chunk with a structured
    * schema, zips the parallel arrays it returns, and persists the result as the assessment's whole
-   * claim set. A provider failure or a schema violation propagates — no partial claim set is
-   * stored when a later chunk fails, because the replace happens only after every chunk answered.
+   * claim set. A provider failure or a schema violation propagates — no partial claim set is stored
+   * when a later chunk fails, because the replace happens only after every chunk answered.
    */
   public ExtractClaimsResult extractClaims(
       UUID tenantId, UUID userId, UUID assessmentId, List<ClaimInput> answers) {
@@ -235,7 +229,9 @@ public class AssessmentService {
       ModelResponse response =
           modelGateway.execute(
               ModelRequest.structured(
-                  EXTRACT_PURPOSE, EXTRACT_SYSTEM_PROMPT, extractUserPrompt(chunk),
+                  EXTRACT_PURPOSE,
+                  EXTRACT_SYSTEM_PROMPT,
+                  extractUserPrompt(chunk),
                   EXTRACT_SCHEMA));
       provider = response.provider();
       model = response.model();
@@ -277,11 +273,10 @@ public class AssessmentService {
           .append(chunk.get(i).answerText())
           .append('\n');
     }
-    prompt
-        .append(
-            "Return {\"questions\":[...],\"answers\":[...]} with both arrays index-aligned:"
-                + " questions[i] is the exact question text above and answers[i] is the extracted"
-                + " claim for that answer.");
+    prompt.append(
+        "Return {\"questions\":[...],\"answers\":[...]} with both arrays index-aligned:"
+            + " questions[i] is the exact question text above and answers[i] is the extracted"
+            + " claim for that answer.");
     return prompt.toString();
   }
 
@@ -405,9 +400,8 @@ public class AssessmentService {
           .append(passage.text())
           .append('\n');
     }
-    prompt
-        .append(
-            """
+    prompt.append(
+        """
             Return {"findingType":"Supported|Unsupported|Contradictory|Missing","title":"...",\
             "explanation":"...","evidencePageNumbers":[...],"evidenceQuotes":[...],\
             "evidenceQuoteSha256":[...]}.
@@ -425,8 +419,7 @@ public class AssessmentService {
   private FindingInput toFindingInput(
       Claim claim, ModelResponse response, List<EvidencePassage> passages) {
     JsonNode structured = requireStructured(response);
-    FindingType type =
-        FindingType.fromText(structured.path("findingType").asText("Missing"));
+    FindingType type = FindingType.fromText(structured.path("findingType").asText("Missing"));
     String title = structured.path("title").asText("");
     String explanation = structured.path("explanation").asText("");
     if (title.isBlank() || explanation.isBlank()) {
@@ -459,10 +452,7 @@ public class AssessmentService {
       // citation from the compare path therefore carries no record id and is anchored by page.
       EvidenceRef citation =
           new EvidenceRef(
-              null,
-              pageNumber,
-              quotes.get(i),
-              hashes.get(i).isBlank() ? null : hashes.get(i));
+              null, pageNumber, quotes.get(i), hashes.get(i).isBlank() ? null : hashes.get(i));
       results.add(CitationVerifier.verify(citation, passages));
       citations.add(citation);
     }
@@ -473,10 +463,7 @@ public class AssessmentService {
       EvidenceRef first = citations.get(0);
       evidence =
           new EvidenceRef(
-              null,
-              first.pageNumber(),
-              first.quote(),
-              results.get(0).computedQuoteSha256());
+              null, first.pageNumber(), first.quote(), results.get(0).computedQuoteSha256());
     } else {
       String failure =
           results.stream()
@@ -489,11 +476,9 @@ public class AssessmentService {
       }
       type = FindingType.UNSUPPORTED;
       explanation = explanation + " Citation verification failed: " + failure + ".";
-      LOG.info(
-          "citation verification failed for claim {}: {}", claim.id(), failure);
+      LOG.info("citation verification failed for claim {}: {}", claim.id(), failure);
     }
-    return new FindingInput(
-        claim.assessmentId(), claim.id(), type, title, explanation, evidence);
+    return new FindingInput(claim.assessmentId(), claim.id(), type, title, explanation, evidence);
   }
 
   private static @Nullable EvidencePassage findPassage(
@@ -509,9 +494,9 @@ public class AssessmentService {
   // -- Findings ------------------------------------------------------------------
 
   /**
-   * Creates a finding as {@code Pending Approval} — never Approved, never Rejected. The severity
-   * is computed from the type. When evidence is supplied with a quote hash, the hash must match
-   * the hash recomputed from the quote; a mismatch is a client error, not a stored finding. The
+   * Creates a finding as {@code Pending Approval} — never Approved, never Rejected. The severity is
+   * computed from the type. When evidence is supplied with a quote hash, the hash must match the
+   * hash recomputed from the quote; a mismatch is a client error, not a stored finding. The
    * natural-key check (same assessment, claim, type and title among non-rejected findings) is the
    * reconciliation that keeps the SENSITIVE_WRITE tool idempotent under the engine's at-least-once
    * execution: a retried invocation returns the existing finding instead of creating a second one.
@@ -530,8 +515,12 @@ public class AssessmentService {
     EvidenceRef evidence = normalizeEvidence(input.evidence());
     FindingInput normalized =
         new FindingInput(
-            input.assessmentId(), input.claimId(), input.findingType(), input.title(),
-            input.explanation(), evidence);
+            input.assessmentId(),
+            input.claimId(),
+            input.findingType(),
+            input.title(),
+            input.explanation(),
+            evidence);
     Finding existing = findOpenFinding(tenantId, userId, normalized);
     if (existing != null) {
       audit.appendForTenant(
@@ -589,11 +578,7 @@ public class AssessmentService {
         "ASSESSMENT_FINDING_DECIDED",
         "assessment_finding",
         findingId.toString(),
-        "{\"assessmentId\":\""
-            + assessmentId
-            + "\",\"decision\":\""
-            + decision.text()
-            + "\"}");
+        "{\"assessmentId\":\"" + assessmentId + "\",\"decision\":\"" + decision.text() + "\"}");
     return updated;
   }
 
@@ -604,8 +589,7 @@ public class AssessmentService {
 
   // -- Helpers -------------------------------------------------------------------
 
-  private Finding findFinding(
-      UUID tenantId, UUID userId, UUID assessmentId, UUID findingId) {
+  private Finding findFinding(UUID tenantId, UUID userId, UUID assessmentId, UUID findingId) {
     return store.listFindings(tenantId, userId, assessmentId).stream()
         .filter(f -> f.id().equals(findingId))
         .findFirst()
@@ -613,8 +597,7 @@ public class AssessmentService {
             () -> new IllegalArgumentException("finding not found in assessment: " + findingId));
   }
 
-  private @Nullable Finding findOpenFinding(
-      UUID tenantId, UUID userId, FindingInput input) {
+  private @Nullable Finding findOpenFinding(UUID tenantId, UUID userId, FindingInput input) {
     return store.listFindings(tenantId, userId, input.assessmentId()).stream()
         .filter(f -> f.status() != FindingStatus.REJECTED)
         .filter(f -> java.util.Objects.equals(f.claimId(), input.claimId()))
@@ -641,8 +624,7 @@ public class AssessmentService {
       throw new IllegalArgumentException(
           "evidenceQuoteSha256 does not match the quote; refusing to store an unverified citation");
     }
-    return new EvidenceRef(
-        evidence.recordId(), evidence.pageNumber(), evidence.quote(), computed);
+    return new EvidenceRef(evidence.recordId(), evidence.pageNumber(), evidence.quote(), computed);
   }
 
   private static JsonNode requireStructured(ModelResponse response) {

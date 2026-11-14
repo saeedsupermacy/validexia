@@ -11,8 +11,8 @@ import org.jspecify.annotations.Nullable;
  * never supplies a severity, a status transition or a score).
  *
  * <p>The API layer depends on these records only, never on repository row types, so the layering
- * rule (controller → application service → repository) holds for this module exactly as it does
- * for identity and agents.
+ * rule (controller → application service → repository) holds for this module exactly as it does for
+ * identity and agents.
  */
 public final class AssessmentData {
 
@@ -198,18 +198,10 @@ public final class AssessmentData {
       @Nullable EvidenceRef evidence) {}
 
   public record ExtractClaimsResult(
-      UUID assessmentId,
-      int claimCount,
-      List<Claim> claims,
-      String provider,
-      String model) {}
+      UUID assessmentId, int claimCount, List<Claim> claims, String provider, String model) {}
 
   public record CompareClaimsResult(
-      UUID assessmentId,
-      int findingCount,
-      List<Finding> findings,
-      String provider,
-      String model) {}
+      UUID assessmentId, int findingCount, List<Finding> findings, String provider, String model) {}
 
   public record CreateFindingResult(
       UUID findingId, FindingStatus status, FindingType findingType, Severity severity) {}

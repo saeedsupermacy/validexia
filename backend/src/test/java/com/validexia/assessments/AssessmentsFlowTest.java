@@ -77,10 +77,8 @@ class AssessmentsFlowTest {
       throws Exception {
     MvcResult result =
         mvc.perform(
-                org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                    .request(
-                        org.springframework.http.HttpMethod.valueOf(method),
-                        path)
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request(
+                        org.springframework.http.HttpMethod.valueOf(method), path)
                     .header("Authorization", "Bearer " + token)
                     .header("X-Tenant-Id", tenantId)
                     .contentType("application/json")
@@ -97,15 +95,9 @@ class AssessmentsFlowTest {
     UUID vendorId = UUID.randomUUID();
 
     JsonNode assessment =
-        call(
-            token,
-            tenantId,
-            "POST",
-            "/api/v1/assessments",
-            "{\"vendorId\":\"" + vendorId + "\"}");
+        call(token, tenantId, "POST", "/api/v1/assessments", "{\"vendorId\":\"" + vendorId + "\"}");
     String assessmentId = assessment.get("id").asText();
-    org.junit.jupiter.api.Assertions.assertEquals(
-        "Draft", assessment.get("status").asText());
+    org.junit.jupiter.api.Assertions.assertEquals("Draft", assessment.get("status").asText());
 
     call(
         token,
@@ -126,7 +118,8 @@ class AssessmentsFlowTest {
                 + "\"explanation\":\"The answer claims quarterly reviews but no supporting "
                 + "document was supplied.\"}");
     String findingId = finding.get("findingId").asText();
-    org.junit.jupiter.api.Assertions.assertEquals("Pending Approval", finding.get("status").asText());
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "Pending Approval", finding.get("status").asText());
     // Severity is deterministic: Unsupported -> High, regardless of what a caller asked for.
     org.junit.jupiter.api.Assertions.assertEquals("High", finding.get("severity").asText());
 
@@ -146,7 +139,8 @@ class AssessmentsFlowTest {
                 .header("Authorization", "Bearer " + token)
                 .header("X-Tenant-Id", tenantId)
                 .contentType("application/json")
-                .content("{\"decision\":\"Approved\",\"reason\":\"Verified by the security team\"}"))
+                .content(
+                    "{\"decision\":\"Approved\",\"reason\":\"Verified by the security team\"}"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.status").value("Approved"))
         .andExpect(jsonPath("$.decisionReason").value("Verified by the security team"));
@@ -167,8 +161,8 @@ class AssessmentsFlowTest {
                 + "AND entity_type = 'assessment_finding' AND action = 'ASSESSMENT_FINDING_DECIDED'",
             Integer.class,
             tenantId.toString());
-    org.junit.jupiter.api.Assertions.assertTrue(audited != null && audited >= 1,
-        "a human decision must be audit-recorded");
+    org.junit.jupiter.api.Assertions.assertTrue(
+        audited != null && audited >= 1, "a human decision must be audit-recorded");
   }
 
   @Test
@@ -177,7 +171,11 @@ class AssessmentsFlowTest {
     String tokenA = token(subjectA);
     UUID tenantA = tenantWithMember(subjectA);
     JsonNode assessment =
-        call(tokenA, tenantA, "POST", "/api/v1/assessments",
+        call(
+            tokenA,
+            tenantA,
+            "POST",
+            "/api/v1/assessments",
             "{\"vendorId\":\"" + UUID.randomUUID() + "\"}");
     String assessmentId = assessment.get("id").asText();
 
