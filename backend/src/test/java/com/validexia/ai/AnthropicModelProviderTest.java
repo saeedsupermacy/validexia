@@ -149,6 +149,54 @@ class AnthropicModelProviderTest {
   }
 
   @Test
+  void aRefusalWithCompleteValidJsonStillFailsWithInvalidOutput() {
+    // The stop_reason is inspected BEFORE the text is parsed: a refusal accompanied by
+    // complete, schema-valid JSON must still fail — the JSON must never be accepted.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"refusal\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aMaxTokensAnswerWithCompleteValidJsonStillFailsWithInvalidOutput() {
+    // Same ordering guarantee for truncation: even if the visible text happens to parse as
+    // complete JSON, a max_tokens stop means the answer was cut off and must fail closed.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"max_tokens\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":4096}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
   void aStructuredAnswerWithoutAnyTextFailsWithInvalidOutput() {
     AnthropicModelProvider provider =
         providerReturning(

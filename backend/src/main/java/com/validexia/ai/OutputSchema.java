@@ -70,8 +70,9 @@ public record OutputSchema(List<Field> fields) {
   /**
    * Renders this schema as a JSON Schema object for a provider's Structured Outputs request. Every
    * object node carries {@code additionalProperties: false}, which Anthropic Structured Outputs
-   * requires on every object in the schema (and which matches the local validator's contract: a
-   * result may not smuggle in fields the caller never declared).
+   * requires on every object in the schema: the API-side grammar will not emit fields the caller
+   * never declared. (The local validator is deliberately more lenient — it tolerates extra fields —
+   * so this emission is the stricter of the two layers, not a mirror of it.)
    */
   public ObjectNode toJsonSchema(ObjectMapper mapper) {
     ObjectNode root = mapper.createObjectNode();
