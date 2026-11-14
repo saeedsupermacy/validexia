@@ -62,10 +62,12 @@ public final class AssessmentData {
       this.text = text;
     }
 
+    @JsonValue
     public String text() {
       return text;
     }
 
+    @JsonCreator
     public static FindingType fromText(String text) {
       for (FindingType type : values()) {
         if (type.text.equals(text)) {
@@ -92,10 +94,12 @@ public final class AssessmentData {
       this.text = text;
     }
 
+    @JsonValue
     public String text() {
       return text;
     }
 
+    @JsonCreator
     public static Severity fromText(String text) {
       for (Severity severity : values()) {
         if (severity.text.equals(text)) {
@@ -129,10 +133,12 @@ public final class AssessmentData {
       this.text = text;
     }
 
+    @JsonValue
     public String text() {
       return text;
     }
 
+    @JsonCreator
     public static FindingStatus fromText(String text) {
       for (FindingStatus status : values()) {
         if (status.text.equals(text)) {
