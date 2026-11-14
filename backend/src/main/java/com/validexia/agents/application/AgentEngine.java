@@ -673,7 +673,7 @@ public class AgentEngine {
       ToolHandler tool) {
     ToolInvocation invocation =
         new ToolInvocation(run.id(), task.id(), task.idempotencyKey(), attempt);
-    ToolRun call = new ToolRun(tool, invocation, task.inputJson());
+    ToolRun call = new ToolRun(tool, invocation, task.inputJson(), tenantId, userId);
     try (TaskClaimHeartbeat heartbeat =
         TaskClaimHeartbeat.start(
             heartbeatScheduler,

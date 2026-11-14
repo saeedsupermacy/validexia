@@ -1,5 +1,7 @@
 package com.validexia.agents.application;
 
+import com.validexia.platform.tenancy.TenantContext;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import org.jspecify.annotations.Nullable;
 
@@ -35,15 +37,24 @@ final class ToolRun implements Callable<String> {
   private final ToolHandler tool;
   private final ToolInvocation invocation;
   private final String inputJson;
+  private final UUID tenantId;
+  private final UUID userId;
   private final Object lock = new Object();
   private boolean cancelRequested;
   private boolean active;
   private @Nullable Thread runner;
 
-  ToolRun(ToolHandler tool, ToolInvocation invocation, String inputJson) {
+  ToolRun(
+      ToolHandler tool,
+      ToolInvocation invocation,
+      String inputJson,
+      UUID tenantId,
+      @Nullable UUID userId) {
     this.tool = tool;
     this.invocation = invocation;
     this.inputJson = inputJson;
+    this.tenantId = tenantId;
+    this.userId = userId;
   }
 
   @Override
@@ -56,12 +67,20 @@ final class ToolRun implements Callable<String> {
       active = true;
       runner = Thread.currentThread();
     }
+    // The run's tenant is the tool's tenant: a tool may only reach tenant-scoped data through the
+    // same fail-closed context the rest of the stack uses. Set on THIS (pooled) thread, because
+    // ThreadLocal values do not cross the executor boundary, and cleared on every exit path.
+    TenantContext.set(tenantId.toString(), userId == null ? null : userId.toString());
     try {
       return tool.execute(invocation, inputJson);
     } finally {
-      synchronized (lock) {
-        active = false;
-        runner = null;
+      try {
+        synchronized (lock) {
+          active = false;
+          runner = null;
+        }
+      } finally {
+        TenantContext.clear();
       }
     }
   }
