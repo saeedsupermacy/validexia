@@ -1,5 +1,7 @@
 package com.validexia.assessments.application;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -31,10 +33,12 @@ public final class AssessmentData {
       this.text = text;
     }
 
+    @JsonValue
     public String text() {
       return text;
     }
 
+    @JsonCreator
     public static AssessmentStatus fromText(String text) {
       for (AssessmentStatus status : values()) {
         if (status.text.equals(text)) {
