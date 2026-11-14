@@ -116,10 +116,14 @@ public class AnthropicModelProvider implements ModelProvider {
     }
     if (response.status() < 200 || response.status() >= 300) {
       int status = response.status();
-      // The provider rejected or failed the call. A 429 or a 5xx is transient — the engine may
-      // retry it; a 4xx such as a bad key (401) or a malformed request (400) is permanent for this
-      // request and must not burn task attempts. The body is never echoed into the message: it can
-      // contain provider prose and fragments of the caller's own content.
+      // The provider rejected or failed the call. The retryable flag below is classification
+      // metadata only: a 429 or a 5xx marks the failure as transient (a deliberate future retry
+      // by a caller could succeed), while a 4xx such as a bad key (401) or a malformed request
+      // (400) is permanent for this request. Nothing in the current execution path retries
+      // automatically — this provider makes exactly one call, the gateway rethrows failures
+      // unchanged, and the engine settles a failed task without re-executing it. The body is
+      // never echoed into the message: it can contain provider prose and fragments of the
+      // caller's own content.
       boolean retryable = status == 429 || status >= 500;
       throw new ModelProviderException(
           ModelProviderException.Kind.PROVIDER_ERROR,
@@ -215,11 +219,12 @@ public class AnthropicModelProvider implements ModelProvider {
 
   /**
    * Extracts the structured answer of a Structured Outputs response. The answer is the JSON carried
-   * in the response's text blocks; anything else — a refusal, a truncated answer, missing text, or
-   * text that is not valid JSON — fails closed as {@link
-   * ModelProviderException.Kind#INVALID_OUTPUT} rather than degrading into a partial or fabricated
-   * result. The gateway still validates the parsed JSON against the caller's schema afterwards;
-   * parsing here only establishes that the answer is JSON at all.
+   * in the response's text blocks, and it is accepted only when the response's {@code stop_reason}
+   * is {@code end_turn}, the documented successful completion. Anything else — a refusal, a
+   * truncated answer, a missing or unexpected stop reason, missing text, or text that is not valid
+   * JSON — fails closed as {@link ModelProviderException.Kind#INVALID_OUTPUT} rather than degrading
+   * into a partial or fabricated result. The gateway still validates the parsed JSON against the
+   * caller's schema afterwards; parsing here only establishes that the answer is JSON at all.
    */
   private JsonNode parseStructuredAnswer(JsonNode root, @Nullable String combinedText) {
     String stopReason = root.path("stop_reason").asText("");
@@ -234,6 +239,19 @@ public class AnthropicModelProvider implements ModelProvider {
       throw new ModelProviderException(
           ModelProviderException.Kind.INVALID_OUTPUT,
           "Anthropic hit the output token limit; the structured result is incomplete");
+    }
+    if (!stopReason.equals("end_turn")) {
+      // Fully fail-closed: end_turn is the only accepted completion. A missing stop_reason, or
+      // any other value (stop_sequence, tool_use, pause_turn, or a future addition), describes a
+      // response shape this code was not written against — reject it rather than guessing. The
+      // value is echoed only when it is a plain token, matching the error-hygiene rule used for
+      // provider error types.
+      String shown = stopReason.matches("[a-z0-9_]{1,64}") ? stopReason : "<unexpected>";
+      throw new ModelProviderException(
+          ModelProviderException.Kind.INVALID_OUTPUT,
+          "Anthropic's structured answer ended without a successful completion (stop_reason: "
+              + (stopReason.isEmpty() ? "<missing>" : shown)
+              + ")");
     }
     if (combinedText == null || combinedText.isBlank()) {
       throw new ModelProviderException(

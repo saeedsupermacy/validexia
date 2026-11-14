@@ -197,6 +197,54 @@ class AnthropicModelProviderTest {
   }
 
   @Test
+  void aStructuredAnswerWithAMissingStopReasonFailsWithInvalidOutput() {
+    // No stop_reason at all: the response shape is not the documented successful completion,
+    // so even complete, schema-valid JSON must be rejected rather than guessed at.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aStructuredAnswerWithAnUnexpectedStopReasonFailsWithInvalidOutput() {
+    // An unexpected stop reason (here stop_sequence, which this client never requests) is
+    // rejected the same way: only end_turn is an accepted structured completion.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"stop_sequence\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
   void aStructuredAnswerWithoutAnyTextFailsWithInvalidOutput() {
     AnthropicModelProvider provider =
         providerReturning(
