@@ -18,11 +18,12 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * A real client for the Anthropic Messages API. Structured requests are executed as a forced tool
- * call ({@code emit_result}) whose input schema is the caller's {@link OutputSchema} — the
- * provider's most reliable structured-output path — and the tool input is returned as the
- * structured answer for the gateway to validate. Unstructured requests return the concatenated text
- * blocks.
+ * A real client for the Anthropic Messages API. Structured requests use Anthropic Structured
+ * Outputs: the caller's {@link OutputSchema} is sent as {@code output_config.format} (type {@code
+ * json_schema}), the API constrains the answer to schema-valid JSON returned in a text block, and
+ * that JSON is parsed and returned as the structured answer for the gateway to validate.
+ * (Current-generation models reject a forced {@code tool_choice}, so no tool is declared or forced
+ * for structured answers.) Unstructured requests return the concatenated text blocks.
  *
  * <p>The HTTP call sits behind a {@link Transport} seam so the request shape and response parsing
  * are unit-testable without network access; production uses {@link HttpClient}. The API key is sent
@@ -42,7 +43,6 @@ public class AnthropicModelProvider implements ModelProvider {
 
   record TransportResponse(int status, String body) {}
 
-  static final String RESULT_TOOL_NAME = "emit_result";
   private static final String ANTHROPIC_VERSION = "2023-06-01";
 
   private final AiProperties properties;
@@ -126,7 +126,7 @@ public class AnthropicModelProvider implements ModelProvider {
           retryable,
           "Anthropic returned HTTP " + status + errorTypeSuffix(response.body()));
     }
-    ModelResponse parsed = parseResponse(response.body());
+    ModelResponse parsed = parseResponse(response.body(), request.schema() != null);
     if (request.schema() == null && parsed.text() == null) {
       // An unstructured call that produced no text at all answered nothing. Returning a response
       // with null text would let a caller mistake a provider malfunction for a genuine answer.
@@ -171,22 +171,14 @@ public class AnthropicModelProvider implements ModelProvider {
     user.put("role", "user");
     user.put("content", request.userPrompt());
     if (request.schema() != null) {
-      ArrayNode tools = root.putArray("tools");
-      ObjectNode tool = tools.addObject();
-      tool.put("name", RESULT_TOOL_NAME);
-      tool.put(
-          "description",
-          "Emit the final structured result. Call this tool exactly once with the complete"
-              + " result; do not answer in free text instead.");
-      tool.set("input_schema", request.schema().toJsonSchema(mapper));
-      ObjectNode choice = root.putObject("tool_choice");
-      choice.put("type", "tool");
-      choice.put("name", RESULT_TOOL_NAME);
+      ObjectNode format = root.putObject("output_config").putObject("format");
+      format.put("type", "json_schema");
+      format.set("schema", request.schema().toJsonSchema(mapper));
     }
     return root.toString();
   }
 
-  private ModelResponse parseResponse(String body) {
+  private ModelResponse parseResponse(String body, boolean structuredRequest) {
     JsonNode root;
     try {
       root = mapper.readTree(body);
@@ -195,18 +187,18 @@ public class AnthropicModelProvider implements ModelProvider {
           ModelProviderException.Kind.PROVIDER_ERROR, "Anthropic response was not valid JSON", e);
     }
     StringBuilder text = new StringBuilder();
-    @Nullable JsonNode structured = null;
     JsonNode content = root.get("content");
     if (content != null && content.isArray()) {
       for (JsonNode block : content) {
-        String type = block.path("type").asText("");
-        if (type.equals("text")) {
+        if (block.path("type").asText("").equals("text")) {
           text.append(block.path("text").asText(""));
-        } else if (type.equals("tool_use")
-            && block.path("name").asText("").equals(RESULT_TOOL_NAME)) {
-          structured = block.get("input");
         }
       }
+    }
+    String combinedText = text.isEmpty() ? null : text.toString();
+    @Nullable JsonNode structured = null;
+    if (structuredRequest) {
+      structured = parseStructuredAnswer(root, combinedText);
     }
     JsonNode usage = root.get("usage");
     int inputTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
@@ -214,10 +206,47 @@ public class AnthropicModelProvider implements ModelProvider {
     return new ModelResponse(
         name(),
         root.path("model").asText(properties.model()),
-        text.isEmpty() ? null : text.toString(),
+        combinedText,
         structured,
         inputTokens,
         outputTokens,
         0);
+  }
+
+  /**
+   * Extracts the structured answer of a Structured Outputs response. The answer is the JSON carried
+   * in the response's text blocks; anything else — a refusal, a truncated answer, missing text, or
+   * text that is not valid JSON — fails closed as {@link
+   * ModelProviderException.Kind#INVALID_OUTPUT} rather than degrading into a partial or fabricated
+   * result. The gateway still validates the parsed JSON against the caller's schema afterwards;
+   * parsing here only establishes that the answer is JSON at all.
+   */
+  private JsonNode parseStructuredAnswer(JsonNode root, @Nullable String combinedText) {
+    String stopReason = root.path("stop_reason").asText("");
+    if (stopReason.equals("refusal")) {
+      throw new ModelProviderException(
+          ModelProviderException.Kind.INVALID_OUTPUT,
+          "Anthropic refused the structured request; no structured result was produced");
+    }
+    if (stopReason.equals("max_tokens")) {
+      // A truncated answer is incomplete by definition: fail before parsing, because a cut-off
+      // JSON document must never be mistaken for a complete result.
+      throw new ModelProviderException(
+          ModelProviderException.Kind.INVALID_OUTPUT,
+          "Anthropic hit the output token limit; the structured result is incomplete");
+    }
+    if (combinedText == null || combinedText.isBlank()) {
+      throw new ModelProviderException(
+          ModelProviderException.Kind.INVALID_OUTPUT,
+          "Anthropic answered a structured request without any text content");
+    }
+    try {
+      return mapper.readTree(combinedText);
+    } catch (JacksonException e) {
+      throw new ModelProviderException(
+          ModelProviderException.Kind.INVALID_OUTPUT,
+          "Anthropic's structured answer was not valid JSON",
+          e);
+    }
   }
 }
