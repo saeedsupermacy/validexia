@@ -12,11 +12,13 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -88,6 +90,33 @@ class AnthropicModelProviderHttpTransportTest {
     assertEquals("real-transport-key", seenApiKey.get());
     assertTrue(seenContentType.get().contains("application/json"));
     assertTrue(seenRequestBody.get().contains("\"model\":\"test-model\""));
+  }
+
+  @Test
+  void aStructuredCallOverTheRealTransportSendsOutputConfigAndNoForcedTool() throws Exception {
+    status.set(200);
+    responseBody.set(
+        "{\"model\":\"test-model\",\"stop_reason\":\"end_turn\","
+            + "\"content\":[{\"type\":\"text\",\"text\":\"{\\\"verdict\\\":\\\"PASS\\\"}\"}],"
+            + "\"usage\":{\"input_tokens\":9,\"output_tokens\":3}}");
+    OutputSchema schema =
+        new OutputSchema(List.of(OutputSchema.Field.required("verdict", OutputSchema.Type.STRING)));
+
+    ModelResponse response =
+        realProvider()
+            .complete(ModelRequest.structured("evidence.extraction", "sys", "user", schema));
+
+    assertEquals("PASS", response.structured().path("verdict").asText());
+    JsonNode sent = mapper.readTree(seenRequestBody.get());
+    assertFalse(sent.has("tools"));
+    assertFalse(sent.has("tool_choice"));
+    assertEquals("json_schema", sent.path("output_config").path("format").path("type").asText());
+    assertFalse(
+        sent.path("output_config")
+            .path("format")
+            .path("schema")
+            .path("additionalProperties")
+            .asBoolean(true));
   }
 
   @Test

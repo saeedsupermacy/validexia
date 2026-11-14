@@ -8,8 +8,8 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The explicit contract for a structured model output: the fields the caller requires, their types,
- * and any enumerated values. The schema is sent to the provider (as the input schema of a forced
- * tool call) AND enforced locally by {@link StructuredOutputValidator} on the response — the
+ * and any enumerated values. The schema is sent to the provider (as the JSON Schema of a Structured
+ * Outputs request) AND enforced locally by {@link StructuredOutputValidator} on the response — the
  * provider's own schema adherence is never trusted on its own, because a malformed or drifting
  * output must fail loudly here rather than propagate into findings or records.
  *
@@ -67,10 +67,17 @@ public record OutputSchema(List<Field> fields) {
     }
   }
 
-  /** Renders this schema as a JSON Schema object for a provider's tool input schema. */
+  /**
+   * Renders this schema as a JSON Schema object for a provider's Structured Outputs request. Every
+   * object node carries {@code additionalProperties: false}, which Anthropic Structured Outputs
+   * requires on every object in the schema: the API-side grammar will not emit fields the caller
+   * never declared. (The local validator is deliberately more lenient — it tolerates extra fields —
+   * so this emission is the stricter of the two layers, not a mirror of it.)
+   */
   public ObjectNode toJsonSchema(ObjectMapper mapper) {
     ObjectNode root = mapper.createObjectNode();
     root.put("type", "object");
+    root.put("additionalProperties", false);
     ObjectNode properties = root.putObject("properties");
     ArrayNode required = mapper.createArrayNode();
     for (Field field : fields) {
@@ -79,7 +86,10 @@ public record OutputSchema(List<Field> fields) {
         case STRING -> property.put("type", "string");
         case NUMBER -> property.put("type", "number");
         case BOOLEAN -> property.put("type", "boolean");
-        case OBJECT -> property.put("type", "object");
+        case OBJECT -> {
+          property.put("type", "object");
+          property.put("additionalProperties", false);
+        }
         case ARRAY -> {
           property.put("type", "array");
           if (field.itemsType() == Type.STRING) {

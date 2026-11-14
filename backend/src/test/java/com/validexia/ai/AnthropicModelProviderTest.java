@@ -46,7 +46,7 @@ class AnthropicModelProviderTest {
   }
 
   @Test
-  void aStructuredCallForcesTheResultToolAndParsesItsInput() throws Exception {
+  void aStructuredCallUsesStructuredOutputsAndParsesTheJsonText() throws Exception {
     AtomicReference<String> url = new AtomicReference<>();
     AtomicReference<Map<String, String>> headers = new AtomicReference<>();
     AtomicReference<String> body = new AtomicReference<>();
@@ -56,8 +56,9 @@ class AnthropicModelProviderTest {
             headers,
             body,
             200,
-            "{\"model\":\"test-model\",\"content\":[{\"type\":\"tool_use\",\"name\":\"emit_result\","
-                + "\"input\":{\"verdict\":\"PASS\",\"quotes\":[\"q1\"]}}],"
+            "{\"model\":\"test-model\",\"stop_reason\":\"end_turn\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
                 + "\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}");
 
     ModelResponse response =
@@ -68,14 +69,220 @@ class AnthropicModelProviderTest {
     assertEquals("2023-06-01", headers.get().get("anthropic-version"));
     JsonNode sent = mapper.readTree(body.get());
     assertEquals("test-model", sent.path("model").asText());
-    assertEquals("tool", sent.path("tool_choice").path("type").asText());
-    assertEquals("emit_result", sent.path("tool_choice").path("name").asText());
-    JsonNode inputSchema = sent.path("tools").get(0).path("input_schema");
-    assertTrue(inputSchema.path("required").toString().contains("verdict"));
+    // Structured Outputs replaces the forced tool call entirely: no tools, no tool_choice.
+    assertFalse(sent.has("tools"));
+    assertFalse(sent.has("tool_choice"));
+    JsonNode format = sent.path("output_config").path("format");
+    assertEquals("json_schema", format.path("type").asText());
+    JsonNode sentSchema = format.path("schema");
+    assertTrue(sentSchema.path("required").toString().contains("verdict"));
+    assertFalse(sentSchema.path("additionalProperties").asBoolean(true));
     assertEquals("PASS", response.structured().path("verdict").asText());
     assertEquals("q1", response.structured().path("quotes").get(0).asText());
     assertEquals(11, response.inputTokens());
     assertEquals(7, response.outputTokens());
+  }
+
+  @Test
+  void theEmittedSchemaForbidsAdditionalPropertiesOnEveryObject() {
+    OutputSchema briefShaped =
+        new OutputSchema(
+            List.of(
+                OutputSchema.Field.required("summary", OutputSchema.Type.STRING),
+                OutputSchema.Field.requiredStringArray("keyFacts"),
+                OutputSchema.Field.required("abstained", OutputSchema.Type.BOOLEAN),
+                OutputSchema.Field.optional("meta", OutputSchema.Type.OBJECT)));
+
+    JsonNode jsonSchema = briefShaped.toJsonSchema(mapper);
+
+    assertFalse(jsonSchema.path("additionalProperties").asBoolean(true));
+    assertFalse(
+        jsonSchema.path("properties").path("meta").path("additionalProperties").asBoolean(true));
+    // No existing constraint is dropped: types, required fields and array items survive.
+    assertEquals("string", jsonSchema.path("properties").path("summary").path("type").asText());
+    assertEquals(
+        "string",
+        jsonSchema.path("properties").path("keyFacts").path("items").path("type").asText());
+    assertTrue(jsonSchema.path("required").toString().contains("summary"));
+    assertTrue(jsonSchema.path("required").toString().contains("abstained"));
+  }
+
+  @Test
+  void aRefusedStructuredAnswerFailsWithInvalidOutput() {
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"refusal\",\"content\":[],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aTruncatedStructuredAnswerFailsWithInvalidOutput() {
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"max_tokens\","
+                + "\"content\":[{\"type\":\"text\",\"text\":\"{\\\"verdict\\\":\\\"PA\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":4096}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aRefusalWithCompleteValidJsonStillFailsWithInvalidOutput() {
+    // The stop_reason is inspected BEFORE the text is parsed: a refusal accompanied by
+    // complete, schema-valid JSON must still fail — the JSON must never be accepted.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"refusal\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aMaxTokensAnswerWithCompleteValidJsonStillFailsWithInvalidOutput() {
+    // Same ordering guarantee for truncation: even if the visible text happens to parse as
+    // complete JSON, a max_tokens stop means the answer was cut off and must fail closed.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"max_tokens\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":4096}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aStructuredAnswerWithAMissingStopReasonFailsWithInvalidOutput() {
+    // No stop_reason at all: the response shape is not the documented successful completion,
+    // so even complete, schema-valid JSON must be rejected rather than guessed at.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aStructuredAnswerWithAnUnexpectedStopReasonFailsWithInvalidOutput() {
+    // An unexpected stop reason (here stop_sequence, which this client never requests) is
+    // rejected the same way: only end_turn is an accepted structured completion.
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"stop_sequence\","
+                + "\"content\":[{\"type\":\"text\",\"text\":"
+                + "\"{\\\"verdict\\\":\\\"PASS\\\",\\\"quotes\\\":[\\\"q1\\\"]}\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aStructuredAnswerWithoutAnyTextFailsWithInvalidOutput() {
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"end_turn\",\"content\":[],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
+  }
+
+  @Test
+  void aStructuredAnswerThatIsNotJsonFailsWithInvalidOutput() {
+    AnthropicModelProvider provider =
+        providerReturning(
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            new AtomicReference<>(),
+            200,
+            "{\"model\":\"test-model\",\"stop_reason\":\"end_turn\","
+                + "\"content\":[{\"type\":\"text\",\"text\":\"I cannot answer in JSON.\"}],"
+                + "\"usage\":{\"input_tokens\":5,\"output_tokens\":6}}");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () ->
+                provider.complete(
+                    ModelRequest.structured("evidence.extraction", "sys", "user", schema())));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertFalse(thrown.retryable());
   }
 
   @Test
@@ -95,7 +302,10 @@ class AnthropicModelProviderTest {
 
     ModelResponse response = provider.complete(ModelRequest.text("purpose", "sys", "user"));
 
-    assertFalse(mapper.readTree(body.get()).has("tools"));
+    JsonNode sent = mapper.readTree(body.get());
+    assertFalse(sent.has("tools"));
+    assertFalse(sent.has("tool_choice"));
+    assertFalse(sent.has("output_config"));
     assertEquals("Hello world", response.text());
     assertEquals(3, response.inputTokens());
   }
