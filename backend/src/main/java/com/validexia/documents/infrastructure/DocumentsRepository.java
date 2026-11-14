@@ -20,11 +20,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The documents module's only door to its tables. Every method calls a SECURITY DEFINER function
- * from migration V13; the application role holds no direct grants on the document tables. Each
- * call runs in its own transaction opened through the tenant-aware transaction manager, with the
- * tenant context set first — the same pattern {@code VendorsRepository} and {@code AgentsRepository}
- * use, so {@code app.tenant_id} is the transaction's first statement and the functions'
- * fail-closed tenant guard sees it.
+ * from migration V13; the application role holds no direct grants on the document tables. Each call
+ * runs in its own transaction opened through the tenant-aware transaction manager, with the tenant
+ * context set first — the same pattern {@code VendorsRepository} and {@code AgentsRepository} use,
+ * so {@code app.tenant_id} is the transaction's first statement and the functions' fail-closed
+ * tenant guard sees it.
  */
 @Repository
 public class DocumentsRepository {
@@ -113,9 +113,9 @@ public class DocumentsRepository {
   }
 
   /**
-   * Replaces the document's page set atomically: the delete and the insert run inside this
-   * method's single transaction, so a partial replacement is never observable. Returns false when
-   * the document does not belong to the tenant.
+   * Replaces the document's page set atomically: the delete and the insert run inside this method's
+   * single transaction, so a partial replacement is never observable. Returns false when the
+   * document does not belong to the tenant.
    */
   public boolean replaceDocumentPages(
       UUID tenantId, UUID userId, UUID documentId, String pagesJson) {

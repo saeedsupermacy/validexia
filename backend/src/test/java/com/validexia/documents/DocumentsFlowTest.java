@@ -121,8 +121,12 @@ class DocumentsFlowTest {
     UUID tenantId = tenantWithMember(subject);
 
     String body = upload(token, tenantId, pdfWithPages(3), "questionnaire.pdf");
-    String documentId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
-        .readTree(body).get("id").asText();
+    String documentId =
+        com.fasterxml.jackson.databind.json.JsonMapper.builder()
+            .build()
+            .readTree(body)
+            .get("id")
+            .asText();
 
     // Page boundaries survived extraction: one row per page, in order, with hashes.
     mvc.perform(
@@ -133,7 +137,8 @@ class DocumentsFlowTest {
         .andExpect(jsonPath("$.length()").value(3))
         .andExpect(jsonPath("$[0].pageNumber").value(1))
         .andExpect(jsonPath("$[2].pageNumber").value(3))
-        .andExpect(jsonPath("$[0].textContent").value(org.hamcrest.Matchers.containsString("test page 1")))
+        .andExpect(
+            jsonPath("$[0].textContent").value(org.hamcrest.Matchers.containsString("test page 1")))
         .andExpect(jsonPath("$[0].textSha256").isNotEmpty());
 
     // An evidence citation is anchored to a page.
@@ -161,8 +166,12 @@ class DocumentsFlowTest {
     String tokenA = token(subjectA);
     UUID tenantA = tenantWithMember(subjectA);
     String body = upload(tokenA, tenantA, pdfWithPages(1), "a.pdf");
-    String documentId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
-        .readTree(body).get("id").asText();
+    String documentId =
+        com.fasterxml.jackson.databind.json.JsonMapper.builder()
+            .build()
+            .readTree(body)
+            .get("id")
+            .asText();
 
     String subjectB = "doc-b-" + UUID.randomUUID();
     String tokenB = token(subjectB);
@@ -211,9 +220,7 @@ class DocumentsFlowTest {
 
     mvc.perform(
             multipart("/api/v1/documents")
-                .file(
-                    new MockMultipartFile(
-                        "file", "q.pdf", "application/pdf", pdfWithPages(1)))
+                .file(new MockMultipartFile("file", "q.pdf", "application/pdf", pdfWithPages(1)))
                 .header("Authorization", "Bearer " + token))
         .andExpect(status().isBadRequest());
   }

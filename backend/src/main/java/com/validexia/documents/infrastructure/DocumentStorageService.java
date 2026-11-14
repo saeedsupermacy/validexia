@@ -43,10 +43,7 @@ public class DocumentStorageService {
     try {
       Files.createDirectories(target.getParent());
       Files.write(
-          target,
-          upload.content(),
-          StandardOpenOption.CREATE_NEW,
-          StandardOpenOption.WRITE);
+          target, upload.content(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
     } catch (IOException e) {
       throw new DocumentUploadException("the file could not be stored");
     }
@@ -117,9 +114,9 @@ public class DocumentStorageService {
   }
 
   /**
-   * Reduces a client-supplied name to a single path segment. A client can never choose a
-   * directory: separators, parent references and control characters are removed before the path is
-   * resolved under the tenant/document directory.
+   * Reduces a client-supplied name to a single path segment. A client can never choose a directory:
+   * separators, parent references and control characters are removed before the path is resolved
+   * under the tenant/document directory.
    */
   private static String sanitizeFileName(String rawFileName) {
     String name = rawFileName == null ? "" : rawFileName.trim().replace('\\', '/');

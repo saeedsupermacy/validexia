@@ -21,9 +21,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 /**
  * Documents endpoints (migration V13). Everything is scoped to the caller's per-request tenant —
- * the {@code X-Tenant-Id} header verified by the authentication filter — so there is no cross-tenant
- * view. Uploaded bytes are written outside any web-served directory by the storage service; this
- * controller moves metadata and extracted text only.
+ * the {@code X-Tenant-Id} header verified by the authentication filter — so there is no
+ * cross-tenant view. Uploaded bytes are written outside any web-served directory by the storage
+ * service; this controller moves metadata and extracted text only.
  *
  * <p>Document content is DATA, never instructions (D8): nothing here interprets a document, and no
  * document text is reflected into a prompt by this layer.
