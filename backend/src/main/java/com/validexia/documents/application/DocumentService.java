@@ -3,8 +3,8 @@ package com.validexia.documents.application;
 import com.validexia.documents.application.DocumentData.Evidence;
 import com.validexia.documents.application.DocumentData.ExtractedPage;
 import com.validexia.documents.application.DocumentData.UploadCommand;
-import com.validexia.documents.infrastructure.DocumentsRepository;
 import com.validexia.documents.infrastructure.DocumentStorageService;
+import com.validexia.documents.infrastructure.DocumentsRepository;
 import com.validexia.documents.infrastructure.PdfPageExtractor;
 import com.validexia.platform.errors.ApiException;
 import java.nio.charset.StandardCharsets;
@@ -35,9 +35,7 @@ public class DocumentService {
   private final PdfPageExtractor extractor;
 
   public DocumentService(
-      DocumentsRepository documents,
-      DocumentStorageService storage,
-      PdfPageExtractor extractor) {
+      DocumentsRepository documents, DocumentStorageService storage, PdfPageExtractor extractor) {
     this.documents = documents;
     this.storage = storage;
     this.extractor = extractor;
@@ -151,9 +149,7 @@ public class DocumentService {
     if (id == null) {
       throw notFound(documentId);
     }
-    return documents
-        .listEvidence(tenantId, userId, documentId)
-        .stream()
+    return documents.listEvidence(tenantId, userId, documentId).stream()
         .filter(evidence -> evidence.id().equals(id))
         .findFirst()
         .orElseThrow(() -> new IllegalStateException("Evidence vanished after creation"));
@@ -215,6 +211,7 @@ public class DocumentService {
   }
 
   private static ApiException notFound(UUID documentId) {
-    return new ApiException(HttpStatus.NOT_FOUND, "DOCUMENT_NOT_FOUND", "No document " + documentId);
+    return new ApiException(
+        HttpStatus.NOT_FOUND, "DOCUMENT_NOT_FOUND", "No document " + documentId);
   }
 }

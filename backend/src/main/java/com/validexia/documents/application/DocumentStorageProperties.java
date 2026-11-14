@@ -16,8 +16,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <base>/<tenant_id>/<document_id>/<filename>} and are never served statically.
  */
 @ConfigurationProperties(prefix = "validexia.documents")
-public record DocumentStorageProperties(
-    @Nullable String storageBasePath, long maxFileSizeBytes) {
+public record DocumentStorageProperties(@Nullable String storageBasePath, long maxFileSizeBytes) {
 
   /** Default upload ceiling: 20 MB. */
   public static final long DEFAULT_MAX_FILE_SIZE_BYTES = 20L * 1024 * 1024;

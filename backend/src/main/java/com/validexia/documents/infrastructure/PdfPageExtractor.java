@@ -17,8 +17,8 @@ import org.springframework.stereotype.Component;
  * <p>Encrypted documents are handled gracefully: a PDF that carries only an empty user password
  * (the common "restricted permissions" case) is decrypted and read; a PDF protected by a real
  * password cannot be read and raises {@link DocumentExtractionException}, which the service turns
- * into a {@code Failed} document rather than a failed request. Blank or image-only pages extract
- * to the empty string and are still persisted, so page numbers stay aligned with the document.
+ * into a {@code Failed} document rather than a failed request. Blank or image-only pages extract to
+ * the empty string and are still persisted, so page numbers stay aligned with the document.
  *
  * <p>Extracted text is untrusted content (D8): it is stored and hashed, never interpreted.
  */
