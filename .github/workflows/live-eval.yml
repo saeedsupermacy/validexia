@@ -32,6 +32,12 @@ concurrency:
 jobs:
   evaluate:
     name: Live evaluation
+    # Hard guard: workflow_dispatch can be initiated against ANY branch, and checking
+    # out main below would not by itself prove the workflow definition came from main.
+    # This job-level condition is evaluated before the job starts, so on any other ref
+    # the job is skipped outright — it never requests the live-eval environment
+    # approval and never receives the environment secret.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: live-eval
