@@ -1,0 +1,74 @@
+name: Live Vendor Brief Evaluation
+
+# Manually dispatched ONLY. There are no push, pull_request, or schedule triggers:
+# this workflow spends real (if small) money against the live model provider, and
+# PR code must never be able to reach the API key. It evaluates the Vendor
+# Intelligence Brief — Validexia's first real AI workflow in its AI third-party
+# risk management platform — against synthetic vendor records only.
+#
+# Setup (founder, once): create a GitHub environment named `live-eval` with a
+# required reviewer, and add the Anthropic API key as the environment secret
+# VALIDEXIA_AI_API_KEY. See backend/docs/ai/LIVE-EVAL.md.
+#
+# The workflow file must be on the default branch (main) before GitHub will
+# offer the dispatch button; the job additionally checks out main explicitly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to evaluate"
+        required: true
+        default: "claude-sonnet-5-5"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-eval
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: Live evaluation
+    # Hard guard: workflow_dispatch can be initiated against ANY branch, and checking
+    # out main below would not by itself prove the workflow definition came from main.
+    # This job-level condition is evaluated before the job starts, so on any other ref
+    # the job is skipped outright — it never requests the live-eval environment
+    # approval and never receives the environment secret.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: live-eval
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Run the live evaluation
+        working-directory: backend
+        env:
+          VALIDEXIA_AI_ENABLED: "true"
+          VALIDEXIA_AI_API_KEY: ${{ secrets.VALIDEXIA_AI_API_KEY }}
+          VALIDEXIA_AI_MODEL: ${{ inputs.model }}
+          VALIDEXIA_LIVE_EVAL_REPORT_DIR: ${{ github.workspace }}/live-eval-report
+        run: ./gradlew --no-daemon liveEval
+
+      - name: Upload the evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-eval-report
+          path: |
+            live-eval-report
+            backend/build/reports/tests/liveEval
+          retention-days: 7

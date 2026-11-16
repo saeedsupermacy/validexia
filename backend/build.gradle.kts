@@ -99,6 +99,28 @@ tasks.withType<Test>().configureEach {
     }
 }
 
+tasks.named<Test>("test") {
+    // The live evaluation harness (com.validexia.ai.eval) calls the real model provider and is
+    // excluded from the default suite entirely — it neither runs nor counts as skipped here.
+    // It runs only through the liveEval task below.
+    exclude("com/validexia/ai/eval/**")
+}
+
+// Live Vendor Intelligence Brief evaluation (backend/docs/ai/LIVE-EVAL.md): real provider calls
+// against synthetic records only, behind the harness's own counting guard (hard cap 12). Run
+// manually via the workflow_dispatch GitHub Actions workflow, or locally with the VALIDEXIA_AI_*
+// environment set. Deliberately NOT wired into check or build.
+val liveEval by tasks.registering(Test::class) {
+    group = "verification"
+    description =
+        "Runs the live Vendor Intelligence Brief evaluation against the real model provider" +
+            " (synthetic records only; requires VALIDEXIA_AI_API_KEY and VALIDEXIA_AI_MODEL)."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    include("com/validexia/ai/eval/**")
+    dependsOn(tasks.named("testClasses"))
+}
+
 // Release-hygiene gate (spec §1/§9): refuse pre-release dependency versions.
 val verifyDependencyPins by tasks.registering {
     group = "verification"
