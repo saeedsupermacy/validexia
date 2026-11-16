@@ -8,7 +8,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
-@EnableConfigurationProperties({ClerkProperties.class, AiProperties.class, DocumentStorageProperties.class})
+@EnableConfigurationProperties({
+  ClerkProperties.class,
+  AiProperties.class,
+  DocumentStorageProperties.class
+})
 public class ValidexiaApplication {
 
   public static void main(String[] args) {
