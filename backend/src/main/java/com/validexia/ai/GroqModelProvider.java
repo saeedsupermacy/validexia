@@ -261,7 +261,10 @@ public class GroqModelProvider implements ModelProvider {
     JsonNode message = choice == null ? null : choice.get("message");
     @Nullable String content = null;
     if (message != null && message.get("content") != null && message.get("content").isString()) {
-      content = message.get("content").asText();
+      // An empty content string is no answer at all: normalise it to null so the caller's
+      // no-text check treats it exactly like a missing one (the Anthropic adapter's convention).
+      String raw = message.get("content").asText();
+      content = raw.isEmpty() ? null : raw;
     }
     @Nullable JsonNode structured = null;
     if (request.schema() != null) {
