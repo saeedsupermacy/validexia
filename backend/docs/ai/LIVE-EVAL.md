@@ -106,11 +106,13 @@ Founder setup, once per provider:
    artifact afterwards.
 
 Expected cost: 7 billed calls at a 4,096-token output cap — roughly $0.15–0.25 at current
-Sonnet 5.5 list prices, under $0.70 in the worst case, plus the unbilled 401 attempt. A Groq
-run at `openai/gpt-oss-120b` list prices ($0.15/$0.60 per 1M input/output tokens) costs well
-under a cent for the same calls, and nothing on Groq's free plan within its rate limits —
-the report records an estimated cost at list rates for either provider, with the pricing
-source and date it was read.
+Sonnet 5.5 list prices, under $0.70 in the worst case, plus the unbilled 401 attempt. For a
+Groq run at `openai/gpt-oss-120b` list prices ($0.15/$0.60 per 1M input/output tokens), the
+output cap alone is 7 × 4,096 × $0.60 / 1M ≈ $0.017, before any input tokens — so expect a
+few cents at list rates, not under a cent. What a given account is actually billed depends
+on its plan's current terms; the authoritative figure for a run is the report's
+usage-based estimate at list rates, which names its pricing source and the date it was
+read.
 
 Running locally is possible (`./gradlew liveEval` in `backend/` with `VALIDEXIA_AI_API_KEY`
 and `VALIDEXIA_AI_MODEL` set in the environment — plus `VALIDEXIA_LIVE_EVAL_PROVIDER=groq`

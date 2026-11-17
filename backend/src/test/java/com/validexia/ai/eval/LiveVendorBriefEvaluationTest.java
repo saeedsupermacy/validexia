@@ -1125,8 +1125,8 @@ class LiveVendorBriefEvaluationTest {
    * pricing page on the date in its source string. A model absent from this table gets NO cost
    * estimate in the report (the report says so) rather than an invented number. Prices change:
    * re-verify the source before relying on an estimate. The estimate is at list rates for the
-   * counted tokens — a free-plan account may be billed less (possibly nothing), and cached-input
-   * discounts are not modelled (neither provider adapter requests prompt caching).
+   * counted tokens — what an account is actually billed depends on its plan's current terms — and
+   * cached-input discounts are not modelled (neither provider adapter requests prompt caching).
    */
   private static final Map<String, ModelPrice> MODEL_PRICES =
       Map.of(
@@ -1216,8 +1216,8 @@ class LiveVendorBriefEvaluationTest {
               + price.outputPerMillion()
               + " per 1M input/output tokens; source: "
               + price.source()
-              + ". Estimate only, at list rates for the counted tokens; a free-plan account"
-              + " may be billed less.");
+              + ". Estimate only, at list rates for the counted tokens; actual billing"
+              + " depends on the account's plan terms.");
     } else {
       root.put(
           "costEstimateBasis",
@@ -1328,7 +1328,7 @@ class LiveVendorBriefEvaluationTest {
           .append(String.format(Locale.ROOT, "%.4f", estimatedCostUsd(price)))
           .append(" (source: ")
           .append(price.source())
-          .append("; a free-plan account may be billed less)\n");
+          .append("; actual billing depends on the account's plan terms)\n");
     } else {
       md.append("Estimated cost: not estimated (no verified list price recorded for this model)\n");
     }

@@ -161,11 +161,9 @@ class LiveProviderFailureEvaluationTest {
   static void database(DynamicPropertyRegistry registry) {
     TestDatabase.springProperties().forEach((key, value) -> registry.add(key, () -> value));
     // The evaluated model arrives from the environment (the workflow's model input), so the same
-    // class exercises whichever provider LiveEvalProviders selected; the default preserves the
+    // class exercises whichever provider LiveEvalProviders selected; the fallback preserves the
     // Anthropic evaluation's model when the variable is absent.
-    registry.add(
-        "validexia.ai.model",
-        () -> System.getenv().getOrDefault("VALIDEXIA_AI_MODEL", "claude-sonnet-5-5"));
+    registry.add("validexia.ai.model", () -> LiveEvalProviders.evaluationModel());
   }
 
   @Autowired MockMvc mvc;
