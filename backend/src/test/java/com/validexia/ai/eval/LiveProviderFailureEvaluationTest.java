@@ -7,7 +7,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.validexia.ai.AiProperties;
-import com.validexia.ai.AnthropicModelProvider;
 import com.validexia.ai.ModelProvider;
 import com.validexia.ai.ModelProviderException;
 import com.validexia.ai.ModelRequest;
@@ -45,9 +44,12 @@ import tools.jackson.databind.ObjectMapper;
  * The live evaluation's provider-failure case, kept in its own class because it needs a different
  * configuration from the main sequence: the API key here is the literal dummy {@code
  * invalid-eval-key} (NOT a real secret — it exists only so the real provider attempts the call and
- * Anthropic rejects it with HTTP 401; the attempt is unbilled). The brief run must then fail
- * cleanly — run FAILED, no brief persisted as a success — after exactly one counted invocation. A
- * fabricated or "successful" brief here would be the worst outcome this evaluation can produce.
+ * the selected provider rejects it with HTTP 401; the attempt is unbilled). The brief run must then
+ * fail cleanly — run FAILED, no brief persisted as a success — after exactly one counted
+ * invocation. A fabricated or "successful" brief here would be the worst outcome this evaluation
+ * can produce. The provider under test is selected exactly as in the main sequence (see {@link
+ * LiveEvalProviders}); the model comes from the {@code VALIDEXIA_AI_MODEL} environment variable,
+ * defaulting to the Anthropic evaluation model.
  *
  * <p>Like the main sequence, this class runs ONLY through the {@code liveEval} Gradle task; the
  * default {@code test} task excludes this package. The counting wrapper is duplicated from {@code
@@ -61,8 +63,7 @@ import tools.jackson.databind.ObjectMapper;
       "validexia.clerk.authorized-parties=https://app.validexia.test",
       "validexia.ai.enabled=true",
       "validexia.ai.provider=live-eval-counting",
-      "validexia.ai.api-key=invalid-eval-key",
-      "validexia.ai.model=claude-sonnet-5-5"
+      "validexia.ai.api-key=invalid-eval-key"
     })
 @AutoConfigureMockMvc
 @Import({TestClerkConfig.class, LiveProviderFailureEvaluationTest.LiveEvalAiConfig.class})
@@ -73,7 +74,13 @@ class LiveProviderFailureEvaluationTest {
 
     static final int HARD_CAP = 12;
 
-    record Call(int index, String purpose, int inputTokens, int outputTokens, String failure) {}
+    record Call(
+        int index,
+        String purpose,
+        int inputTokens,
+        int outputTokens,
+        long durationMs,
+        String failure) {}
 
     private final ModelProvider delegate;
     private final AtomicInteger invocations = new AtomicInteger();
@@ -104,18 +111,31 @@ class LiveProviderFailureEvaluationTest {
                 + HARD_CAP
                 + ")");
       }
+      long startedNanos = System.nanoTime();
       try {
         ModelResponse response = delegate.complete(request);
         calls.add(
             new Call(
-                index, request.purpose(), response.inputTokens(), response.outputTokens(), null));
+                index,
+                request.purpose(),
+                response.inputTokens(),
+                response.outputTokens(),
+                (System.nanoTime() - startedNanos) / 1_000_000,
+                null));
         return response;
       } catch (RuntimeException e) {
         String failure =
             e instanceof ModelProviderException mpe
                 ? mpe.kind().name()
                 : e.getClass().getSimpleName();
-        calls.add(new Call(index, request.purpose(), 0, 0, failure));
+        calls.add(
+            new Call(
+                index,
+                request.purpose(),
+                0,
+                0,
+                (System.nanoTime() - startedNanos) / 1_000_000,
+                failure));
         throw e;
       }
     }
@@ -133,13 +153,17 @@ class LiveProviderFailureEvaluationTest {
   static class LiveEvalAiConfig {
     @Bean
     CountingModelProvider liveEvalCountingProvider(AiProperties properties, ObjectMapper mapper) {
-      return new CountingModelProvider(new AnthropicModelProvider(properties, mapper));
+      return new CountingModelProvider(LiveEvalProviders.createDelegate(properties, mapper));
     }
   }
 
   @DynamicPropertySource
   static void database(DynamicPropertyRegistry registry) {
     TestDatabase.springProperties().forEach((key, value) -> registry.add(key, () -> value));
+    // The evaluated model arrives from the environment (the workflow's model input), so the same
+    // class exercises whichever provider LiveEvalProviders selected; the fallback preserves the
+    // Anthropic evaluation's model when the variable is absent.
+    registry.add("validexia.ai.model", () -> LiveEvalProviders.evaluationModel());
   }
 
   @Autowired MockMvc mvc;

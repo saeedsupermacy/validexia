@@ -2,12 +2,20 @@ name: Live Vendor Brief Evaluation
 
 # Manually dispatched ONLY. There are no push, pull_request, or schedule triggers:
 # this workflow spends real (if small) money against the live model provider, and
-# PR code must never be able to reach the API key. It evaluates the Vendor
+# PR code must never be able to reach an API key. It evaluates the Vendor
 # Intelligence Brief — Validexia's first real AI workflow in its AI third-party
 # risk management platform — against synthetic vendor records only.
 #
-# Setup (founder, once): create a GitHub environment named `live-eval` with a
-# required reviewer, and add the Anthropic API key as the environment secret
+# The provider is chosen at dispatch (anthropic or groq). Each provider has its
+# OWN protected GitHub environment holding its key under the same secret name
+# (VALIDEXIA_AI_API_KEY): `live-eval` for Anthropic, `live-eval-groq` for Groq.
+# A separate validation job — which declares NO environment and therefore never
+# requests an environment approval or receives a secret — checks the
+# provider/model pair first; the evaluation job depends on it via `needs`, so an
+# invalid combination can never reach the protected environment.
+#
+# Setup (founder, once per provider): create the environment with a required
+# reviewer, and add that provider's API key as the environment secret
 # VALIDEXIA_AI_API_KEY. See backend/docs/ai/LIVE-EVAL.md.
 #
 # The workflow file must be on the default branch (main) before GitHub will
@@ -16,8 +24,16 @@ name: Live Vendor Brief Evaluation
 on:
   workflow_dispatch:
     inputs:
+      provider:
+        description: "Provider to evaluate"
+        required: true
+        default: "anthropic"
+        type: choice
+        options:
+          - anthropic
+          - groq
       model:
-        description: "Model to evaluate"
+        description: "Model to evaluate (claude-* for anthropic; a Groq model id such as openai/gpt-oss-120b for groq)"
         required: true
         default: "claude-sonnet-5-5"
         type: string
@@ -30,17 +46,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate provider/model combination
+    # Deliberately NO environment on this job: environment approval happens before
+    # a job's steps run, so pair validation must live in its own unprotected job.
+    # An invalid pair fails here and the evaluation job below never starts — it
+    # never requests the protected environment and never receives its secret.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the provider/model pair
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          case "$PROVIDER" in
+            anthropic)
+              case "$MODEL" in
+                claude-*) echo "Provider/model pair OK: anthropic / $MODEL" ;;
+                *) echo "::error::Provider 'anthropic' requires a claude-* model, got '$MODEL'."; exit 1 ;;
+              esac
+              ;;
+            groq)
+              case "$MODEL" in
+                claude-*) echo "::error::Provider 'groq' cannot run the Anthropic model '$MODEL'."; exit 1 ;;
+                */*) echo "Provider/model pair OK: groq / $MODEL" ;;
+                *) echo "::error::Provider 'groq' requires a namespaced Groq model id (e.g. openai/gpt-oss-120b), got '$MODEL'."; exit 1 ;;
+              esac
+              ;;
+            *) echo "::error::Unknown provider '$PROVIDER'."; exit 1 ;;
+          esac
+
   evaluate:
     name: Live evaluation
+    needs: validate
     # Hard guard: workflow_dispatch can be initiated against ANY branch, and checking
     # out main below would not by itself prove the workflow definition came from main.
     # This job-level condition is evaluated before the job starts, so on any other ref
-    # the job is skipped outright — it never requests the live-eval environment
-    # approval and never receives the environment secret.
+    # the job is skipped outright — it never requests the environment approval and
+    # never receives the environment secret.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: live-eval
+    # The protected environment is selected by the provider input: each environment
+    # holds only its own provider's key (under the same secret name), so a Groq run
+    # can never receive the Anthropic key or vice versa.
+    environment: ${{ inputs.provider == 'groq' && 'live-eval-groq' || 'live-eval' }}
     steps:
       - name: Check out main
         uses: actions/checkout@v4
@@ -60,6 +111,8 @@ jobs:
           VALIDEXIA_AI_ENABLED: "true"
           VALIDEXIA_AI_API_KEY: ${{ secrets.VALIDEXIA_AI_API_KEY }}
           VALIDEXIA_AI_MODEL: ${{ inputs.model }}
+          VALIDEXIA_LIVE_EVAL_PROVIDER: ${{ inputs.provider }}
+          VALIDEXIA_AI_BASE_URL: ${{ inputs.provider == 'groq' && 'https://api.groq.com/openai/v1' || 'https://api.anthropic.com' }}
           VALIDEXIA_LIVE_EVAL_REPORT_DIR: ${{ github.workspace }}/live-eval-report
         run: ./gradlew --no-daemon liveEval
 

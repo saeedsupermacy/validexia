@@ -35,7 +35,7 @@ One sequence, seeded fresh each run (`LiveVendorBriefEvaluationTest`):
 | e | A run in tenant B for tenant A's vendor | Clean not-found failure, nothing about tenant A's vendor in the run, **zero** model calls |
 | f | A run for a random, nonexistent vendor id | Clean not-found failure at the profile step, **zero** model calls |
 | g | A provider instance pointed at an unreachable endpoint (`http://127.0.0.1:9`) | `ModelProviderException` of kind TRANSPORT; no response object; the counting guard is not involved |
-| h | Provenance re-verification over a1–a3 | Each envelope's `inputHash` equals the SHA-256 of the persisted profile JSON it was generated from; envelope provider is `anthropic` and its model equals the configured model |
+| h | Provenance re-verification over a1–a3 | Each envelope's `inputHash` equals the SHA-256 of the persisted profile JSON it was generated from; envelope provider is the selected delegate's name (`anthropic` or `groq`) and its model equals the configured model |
 | — | `LiveProviderFailureEvaluationTest`: a brief run with a dummy invalid API key | Run FAILED cleanly (the provider's HTTP 401), no brief persisted, exactly **1** counted invocation (unbilled) |
 
 ## Hard gates
@@ -55,55 +55,81 @@ Any of these fails the evaluation (the report is still written first):
 ## The counting guard
 
 The gateway is configured with provider name `live-eval-counting`. Behind that name sits a
-test-scoped wrapper that counts every invocation, records each request's purpose and token
-usage, and **refuses the 13th invocation before delegating** (hard cap 12) — a runaway
-evaluation cannot exceed 12 billed calls no matter what the model or the code does. It
-delegates to the real `AnthropicModelProvider`, constructed with the application's bound
-configuration, so the calls are byte-for-byte the production calls. The persisted provenance
-envelope is built from the delegate's response, so it names the real provider (`anthropic`)
-and model — the wrapper's name never appears in provenance, and case (h) asserts that.
+test-scoped wrapper that counts every invocation, records each request's purpose, token
+usage and latency, and **refuses the 13th invocation before delegating** (hard cap 12) — a
+runaway evaluation cannot exceed 12 billed calls no matter what the model or the code does.
+It delegates to the real provider selected for the run — the Anthropic provider by default,
+or the Groq provider when the harness-only variable `VALIDEXIA_LIVE_EVAL_PROVIDER=groq` is
+set (see `LiveEvalProviders`, the one place in the harness that names a provider class) —
+constructed with the application's bound configuration, so the calls are byte-for-byte the
+production calls. The persisted provenance envelope is built from the delegate's response,
+so it names the real provider (`anthropic` or `groq`) and model — the wrapper's name never
+appears in provenance, and case (h) asserts that.
 
 There are no retries anywhere in this path: the provider makes one call, the gateway rethrows
 failures unchanged, and the engine settles a failed task without re-executing it. The invalid-key
-case is an HTTP 401 and is not billed by Anthropic.
+case is an HTTP 401 and is not billed by the provider.
 
 ## Running it
 
 The supported route is the GitHub Actions workflow **Live Vendor Brief Evaluation**
 (`.github/workflows/live-eval.yml`): `workflow_dispatch` only, checks out `main`, minimal
-permissions (`contents: read`), a 15-minute timeout, a concurrency lock, and the report
-uploaded as an artifact with 7-day retention. Nothing about the key, headers, or environment
-is ever printed.
+permissions (`contents: read`), a 15-minute timeout on the evaluation job, a concurrency
+lock, and the report uploaded as an artifact with 7-day retention. Nothing about the key,
+headers, or environment is ever printed.
 
-Founder setup, once:
+The dispatch takes a **provider** input (`anthropic` or `groq`) and a **model** input. A
+separate **validation job** — which declares no environment, so it never requests an
+environment approval and never receives a secret — checks the provider/model pair first
+(`claude-*` models for Anthropic; a namespaced Groq model id, never a `claude-*` model, for
+Groq). The evaluation job depends on it via `needs`: an invalid pair fails in validation and
+the protected job never starts. The evaluation job declares the environment matching the
+provider — **`live-eval`** for Anthropic, **`live-eval-groq`** for Groq — and each
+environment holds only its own provider's key, under the same secret name, so a run can
+never receive the other provider's key.
+
+Founder setup, once per provider:
 
 1. Merge the harness PR to `main`. **The workflow can only be dispatched once the workflow
    file exists on `main`** — GitHub does not offer dispatch for workflows that live only on a
    branch.
-2. In the repository settings, create an environment named **`live-eval`** and add yourself
-   as a **required reviewer**, so every run needs your approval before it starts.
-3. In that environment, add the secret **`VALIDEXIA_AI_API_KEY`** (the Anthropic API key).
+2. In the repository settings, create the environment (**`live-eval`** for Anthropic;
+   **`live-eval-groq`** for Groq) and add yourself as a **required reviewer**, so every run
+   needs your approval before it starts.
+3. In that environment, add the secret **`VALIDEXIA_AI_API_KEY`** — that provider's API key.
    Environment secrets are only exposed to jobs that declare the environment — which, combined
    with the required reviewer and the dispatch-only trigger, is the control that keeps PR code
    away from the key.
-4. Actions → *Live Vendor Brief Evaluation* → *Run workflow*, from `main`, with the model
-   input (default `claude-sonnet-5-5`). Approve the environment prompt. Download the
-   `live-eval-report` artifact afterwards.
+4. Actions → *Live Vendor Brief Evaluation* → *Run workflow*, from `main`, choosing the
+   provider and model (defaults: `anthropic` / `claude-sonnet-5-5`; for Groq use
+   `openai/gpt-oss-120b`). Approve the environment prompt. Download the `live-eval-report`
+   artifact afterwards.
 
 Expected cost: 7 billed calls at a 4,096-token output cap — roughly $0.15–0.25 at current
-Sonnet 5.5 list prices, under $0.70 in the worst case, plus the unbilled 401 attempt.
+Sonnet 5.5 list prices, under $0.70 in the worst case, plus the unbilled 401 attempt. For a
+Groq run at `openai/gpt-oss-120b` list prices ($0.15/$0.60 per 1M input/output tokens), the
+output cap alone is 7 × 4,096 × $0.60 / 1M ≈ $0.017, before any input tokens — so expect a
+few cents at list rates, not under a cent. What a given account is actually billed depends
+on its plan's current terms; the authoritative figure for a run is the report's
+usage-based estimate at list rates, which names its pricing source and the date it was
+read.
 
 Running locally is possible (`./gradlew liveEval` in `backend/` with `VALIDEXIA_AI_API_KEY`
-and `VALIDEXIA_AI_MODEL` set in the environment), but note the suite needs a reachable
-PostgreSQL (the tests use the project's Testcontainers setup) and working JVM network access
-to Anthropic — GitHub Actions is the reliable venue.
+and `VALIDEXIA_AI_MODEL` set in the environment — plus `VALIDEXIA_LIVE_EVAL_PROVIDER=groq`
+and `VALIDEXIA_AI_BASE_URL=https://api.groq.com/openai/v1` for a Groq run), but note the
+suite needs a reachable PostgreSQL (the tests use the project's Testcontainers setup) and
+working JVM network access to the selected provider — GitHub Actions is the reliable venue.
 
 ## The report, and the human semantic review
 
 The run writes `evaluation-report.md` and `evaluation-report.json` (directory from
 `VALIDEXIA_LIVE_EVAL_REPORT_DIR`, default `build/live-eval-report`): per case, the run status,
-counted calls before/after, token usage, the full brief envelope, every keyFact with its
-citation and the recorded value it was checked against, and the automated gate results.
+counted calls before/after, token usage, counted-call latency, the full brief envelope, every
+keyFact with its citation and the recorded value it was checked against, and the automated
+gate results — plus run-level aggregates: call outcomes by kind (succeeded / failure kinds),
+total latency, and an estimated cost at published list rates where a verified price is
+recorded for the model (the report names the pricing source and the date it was read; a
+model with no recorded price gets no estimate, never an invented number).
 
 **Structural validation does not prove semantic truth.** A citation can point at the right
 field with the right value while the sentence built around it still says more than the record
