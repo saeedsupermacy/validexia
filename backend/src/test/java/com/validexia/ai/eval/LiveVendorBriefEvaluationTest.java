@@ -9,7 +9,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.validexia.ai.AiProperties;
-import com.validexia.ai.AnthropicModelProvider;
 import com.validexia.ai.ModelProvider;
 import com.validexia.ai.ModelProviderException;
 import com.validexia.ai.ModelRequest;
@@ -57,18 +56,24 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The LIVE evaluation of the Vendor Intelligence Brief: real engine runs over the real vendors
- * slice, with the real Anthropic provider behind a counting guard. This is an evaluation harness,
+ * slice, with the real selected provider behind a counting guard. This is an evaluation harness,
  * not a unit test — it runs ONLY through the {@code liveEval} Gradle task (the default {@code test}
  * task excludes this package), against SYNTHETIC vendor records invented for this suite. No real
  * vendor or customer data is ever seeded here.
  *
+ * <p><b>Provider selection.</b> Which provider is evaluated is chosen by {@link LiveEvalProviders}
+ * through the harness-only environment variable {@code VALIDEXIA_LIVE_EVAL_PROVIDER} ({@code
+ * anthropic} by default, or {@code groq}); the model, base URL and key arrive through the usual
+ * {@code VALIDEXIA_AI_*} environment configuration. Nothing else in this suite is
+ * provider-specific: the cases, gates and report all sit above the {@link ModelProvider} interface.
+ *
  * <p><b>The counting guard.</b> The gateway is configured with provider name {@code
  * live-eval-counting}; the bean under that name counts every invocation, records each request's
- * purpose and token usage, refuses the 13th invocation (hard cap 12) BEFORE delegating, and
- * otherwise delegates to a manually constructed real {@link AnthropicModelProvider}. The persisted
- * provenance envelope is built from the delegate's {@link ModelResponse} (provider {@code
- * "anthropic"}), so the wrapper's gateway-facing name never appears in provenance — case (h)
- * asserts exactly that.
+ * purpose, token usage and latency, refuses the 13th invocation (hard cap 12) BEFORE delegating,
+ * and otherwise delegates to a manually constructed real provider (see {@link LiveEvalProviders}).
+ * The persisted provenance envelope is built from the delegate's {@link ModelResponse} (the
+ * delegate's own provider name), so the wrapper's gateway-facing name never appears in provenance —
+ * case (h) asserts exactly that.
  *
  * <p><b>What "passing" means.</b> Automated gates are STRUCTURAL: run states, abstention shape,
  * citation integrity re-checked against the persisted record snapshot (mirroring {@code
@@ -111,8 +116,17 @@ class LiveVendorBriefEvaluationTest {
 
     static final int HARD_CAP = 12;
 
-    /** One recorded invocation: its sequence number, purpose, token usage, or failure kind. */
-    record Call(int index, String purpose, int inputTokens, int outputTokens, String failure) {}
+    /**
+     * One recorded invocation: its sequence number, purpose, token usage, wall-clock latency of the
+     * delegated call, or failure kind.
+     */
+    record Call(
+        int index,
+        String purpose,
+        int inputTokens,
+        int outputTokens,
+        long durationMs,
+        String failure) {}
 
     private final ModelProvider delegate;
     private final AtomicInteger invocations = new AtomicInteger();
@@ -143,18 +157,31 @@ class LiveVendorBriefEvaluationTest {
                 + HARD_CAP
                 + ")");
       }
+      long startedNanos = System.nanoTime();
       try {
         ModelResponse response = delegate.complete(request);
         calls.add(
             new Call(
-                index, request.purpose(), response.inputTokens(), response.outputTokens(), null));
+                index,
+                request.purpose(),
+                response.inputTokens(),
+                response.outputTokens(),
+                (System.nanoTime() - startedNanos) / 1_000_000,
+                null));
         return response;
       } catch (RuntimeException e) {
         String failure =
             e instanceof ModelProviderException mpe
                 ? mpe.kind().name()
                 : e.getClass().getSimpleName();
-        calls.add(new Call(index, request.purpose(), 0, 0, failure));
+        calls.add(
+            new Call(
+                index,
+                request.purpose(),
+                0,
+                0,
+                (System.nanoTime() - startedNanos) / 1_000_000,
+                failure));
         throw e;
       }
     }
@@ -174,8 +201,9 @@ class LiveVendorBriefEvaluationTest {
     CountingModelProvider liveEvalCountingProvider(AiProperties properties, ObjectMapper mapper) {
       // The app's bound AiProperties (key/model/base URL arrive from the environment through
       // application.yaml) and the app's ObjectMapper, so the delegate is the production provider
-      // exactly as the gateway would use it — only wrapped.
-      return new CountingModelProvider(new AnthropicModelProvider(properties, mapper));
+      // exactly as the gateway would use it — only wrapped. Which provider class that is comes
+      // from LiveEvalProviders (Anthropic unless VALIDEXIA_LIVE_EVAL_PROVIDER says otherwise).
+      return new CountingModelProvider(LiveEvalProviders.createDelegate(properties, mapper));
     }
   }
 
@@ -213,6 +241,7 @@ class LiveVendorBriefEvaluationTest {
     int callsAfter;
     int inputTokens;
     int outputTokens;
+    long durationMs;
     JsonNode envelope;
     JsonNode brief;
     String profileJson = "";
@@ -466,14 +495,17 @@ class LiveVendorBriefEvaluationTest {
     result.callsAfter = counting.invocations();
     int tokensIn = 0;
     int tokensOut = 0;
+    long duration = 0;
     for (CountingModelProvider.Call call : counting.calls()) {
       if (call.index() > result.callsBefore && call.index() <= result.callsAfter) {
         tokensIn += call.inputTokens();
         tokensOut += call.outputTokens();
+        duration += call.durationMs();
       }
     }
     result.inputTokens = tokensIn;
     result.outputTokens = tokensOut;
+    result.durationMs = duration;
   }
 
   /** Extracts the persisted brief envelope + profile snapshot from a run response. */
@@ -977,12 +1009,12 @@ class LiveVendorBriefEvaluationTest {
         AiProperties unreachable =
             new AiProperties(
                 true,
-                "anthropic",
+                LiveEvalProviders.selection(),
                 "dummy-eval-key",
                 aiProperties.model(),
                 "http://127.0.0.1:9",
                 10);
-        AnthropicModelProvider direct = new AnthropicModelProvider(unreachable, mapper);
+        ModelProvider direct = LiveEvalProviders.createDelegate(unreachable, mapper);
         OutputSchema probeSchema =
             new OutputSchema(
                 List.of(
@@ -1033,8 +1065,12 @@ class LiveVendorBriefEvaluationTest {
               recomputed.equals(rich.envelope.path("inputHash").asText("")),
               "envelope=" + rich.envelope.path("inputHash").asText(""));
           result.gate(
-              label + ": envelope provider is the delegate's name (anthropic, not the wrapper)",
-              "anthropic".equals(rich.envelope.path("model").path("provider").asText("")),
+              label
+                  + ": envelope provider is the delegate's name ("
+                  + LiveEvalProviders.delegateName()
+                  + ", not the wrapper)",
+              LiveEvalProviders.delegateName()
+                  .equals(rich.envelope.path("model").path("provider").asText("")),
               rich.envelope.path("model").path("provider").asText(""));
           result.gate(
               label + ": envelope model matches the configured model",
@@ -1081,6 +1117,56 @@ class LiveVendorBriefEvaluationTest {
     }
   }
 
+  /** Published list price for one model, with its source — an estimate basis, never a guess. */
+  private record ModelPrice(double inputPerMillion, double outputPerMillion, String source) {}
+
+  /**
+   * List prices for the models this evaluation is run against, each read from the provider's own
+   * pricing page on the date in its source string. A model absent from this table gets NO cost
+   * estimate in the report (the report says so) rather than an invented number. Prices change:
+   * re-verify the source before relying on an estimate. The estimate is at list rates for the
+   * counted tokens — a free-plan account may be billed less (possibly nothing), and cached-input
+   * discounts are not modelled (neither provider adapter requests prompt caching).
+   */
+  private static final Map<String, ModelPrice> MODEL_PRICES =
+      Map.of(
+          "claude-sonnet-5-5",
+          new ModelPrice(
+              2.00,
+              10.00,
+              "Anthropic pricing (platform.claude.com/docs/en/about-claude/pricing), read"
+                  + " 2026-11-17"),
+          "openai/gpt-oss-120b",
+          new ModelPrice(
+              0.15,
+              0.60,
+              "Groq model page (console.groq.com/docs/model/openai/gpt-oss-120b), read"
+                  + " 2026-11-17"));
+
+  private long totalCountedDurationMs() {
+    return counting.calls().stream().mapToLong(CountingModelProvider.Call::durationMs).sum();
+  }
+
+  /** Counted calls grouped by outcome: SUCCEEDED, or the failure kind the delegate threw. */
+  private Map<String, Integer> callOutcomeCounts() {
+    Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+    for (CountingModelProvider.Call call : counting.calls()) {
+      counts.merge(call.failure() == null ? "SUCCEEDED" : call.failure(), 1, Integer::sum);
+    }
+    return counts;
+  }
+
+  private ModelPrice priceForConfiguredModel() {
+    return MODEL_PRICES.get(aiProperties.model());
+  }
+
+  private double estimatedCostUsd(ModelPrice price) {
+    long in = counting.calls().stream().mapToLong(CountingModelProvider.Call::inputTokens).sum();
+    long out = counting.calls().stream().mapToLong(CountingModelProvider.Call::outputTokens).sum();
+    return in / 1_000_000.0 * price.inputPerMillion()
+        + out / 1_000_000.0 * price.outputPerMillion();
+  }
+
   private static String sha256Hex(String text) {
     try {
       byte[] digest =
@@ -1110,10 +1196,35 @@ class LiveVendorBriefEvaluationTest {
     ObjectNode root = mapper.createObjectNode();
     root.put("evaluation", "live-vendor-intelligence-brief");
     root.put("generatedAt", Instant.now().toString());
-    root.put("configuredProvider", "anthropic (via the live-eval-counting guard)");
+    root.put(
+        "configuredProvider",
+        LiveEvalProviders.delegateName() + " (via the live-eval-counting guard)");
     root.put("configuredModel", aiProperties.model());
     root.put("hardCap", CountingModelProvider.HARD_CAP);
     root.put("totalCountedInvocations", counting.invocations());
+    root.put("totalCountedDurationMs", totalCountedDurationMs());
+    ObjectNode outcomes = root.putObject("callOutcomes");
+    callOutcomeCounts().forEach(outcomes::put);
+    ModelPrice price = priceForConfiguredModel();
+    if (price != null) {
+      root.put("estimatedCostUsd", estimatedCostUsd(price));
+      root.put(
+          "costEstimateBasis",
+          "list rates $"
+              + price.inputPerMillion()
+              + " / $"
+              + price.outputPerMillion()
+              + " per 1M input/output tokens; source: "
+              + price.source()
+              + ". Estimate only, at list rates for the counted tokens; a free-plan account"
+              + " may be billed less.");
+    } else {
+      root.put(
+          "costEstimateBasis",
+          "no verified list price is recorded for model "
+              + aiProperties.model()
+              + "; cost not estimated");
+    }
     root.put(
         "notice",
         "Structural validation does NOT prove semantic truth. The automated gates below are"
@@ -1130,6 +1241,7 @@ class LiveVendorBriefEvaluationTest {
       node.put("countedCallsAfter", result.callsAfter);
       node.put("inputTokens", result.inputTokens);
       node.put("outputTokens", result.outputTokens);
+      node.put("durationMs", result.durationMs);
       if (!result.error.isBlank()) {
         node.put("error", result.error);
       }
@@ -1197,13 +1309,30 @@ class LiveVendorBriefEvaluationTest {
     StringBuilder md = new StringBuilder();
     md.append("# Live Vendor Intelligence Brief — evaluation report\n\n");
     md.append("Generated: ").append(Instant.now()).append("\n\n");
-    md.append("Provider: anthropic (through the live-eval-counting guard, hard cap ")
+    md.append("Provider: ")
+        .append(LiveEvalProviders.delegateName())
+        .append(" (through the live-eval-counting guard, hard cap ")
         .append(CountingModelProvider.HARD_CAP)
         .append(")  \nModel: ")
         .append(aiProperties.model())
         .append("  \nTotal counted provider invocations: ")
         .append(counting.invocations())
-        .append("\n\n");
+        .append("  \nTotal counted-call latency: ")
+        .append(totalCountedDurationMs())
+        .append(" ms  \nCall outcomes: ")
+        .append(callOutcomeCounts())
+        .append("\n");
+    ModelPrice price = priceForConfiguredModel();
+    if (price != null) {
+      md.append("Estimated cost at list rates: $")
+          .append(String.format(Locale.ROOT, "%.4f", estimatedCostUsd(price)))
+          .append(" (source: ")
+          .append(price.source())
+          .append("; a free-plan account may be billed less)\n");
+    } else {
+      md.append("Estimated cost: not estimated (no verified list price recorded for this model)\n");
+    }
+    md.append("\n");
     md.append(
         "> **Structural validation does not prove semantic truth.** The automated gates in this"
             + " report are structural only (run states, citation integrity against the record"
@@ -1245,6 +1374,7 @@ class LiveVendorBriefEvaluationTest {
           .append(" in / ")
           .append(result.outputTokens)
           .append(" out\n");
+      md.append("- Counted-call latency: ").append(result.durationMs).append(" ms\n");
       if (!result.error.isBlank()) {
         md.append("- Error: ").append(result.error).append("\n");
       }
