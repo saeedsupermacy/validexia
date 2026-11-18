@@ -80,7 +80,18 @@ final class VendorBriefSupport {
       abstention is a correct result.
       7. dataGaps names information a risk reviewer would need that the record does not \
       contain. questionsForVendor lists concrete questions to the vendor whose answers would \
-      close those gaps.""";
+      close those gaps.
+      8. Key-fact format — follow it exactly. keyFacts is an array of strings, and EVERY \
+      string in it must be one complete JSON object with exactly four keys: "fact" (the \
+      factual statement, drawn only from the cited field), "source_kind" (always \
+      "RECORD_FIELD"), "source" (the field path of the one record field the fact comes \
+      from), and "value" (that field's exact value, copied character-for-character from \
+      the record). The content of one keyFacts string looks like this: \
+      {"fact": "The vendor's registered legal name is Acme Cloud Services Ltd", \
+      "source_kind": "RECORD_FIELD", "source": "legalName", "value": "Acme Cloud \
+      Services Ltd"} \
+      A keyFact written as plain text, or as a JSON object missing any of the four keys, \
+      is invalid and the whole brief is rejected.""";
 
   private static final Pattern DEPENDENT_SYSTEM_PATH =
       Pattern.compile("dependentSystems\\[(\\d+)]\\.(name|dataHandled|residency)");
