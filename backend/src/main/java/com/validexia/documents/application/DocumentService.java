@@ -137,6 +137,7 @@ public class DocumentService {
     if (quoteText == null || quoteText.isBlank()) {
       throw ApiException.validation("quoteText is required");
     }
+    validatePageReference(tenantId, userId, documentId, pageId, pageNumber);
     UUID id =
         documents.createEvidence(
             tenantId,
@@ -153,6 +154,46 @@ public class DocumentService {
         .filter(evidence -> evidence.id().equals(id))
         .findFirst()
         .orElseThrow(() -> new IllegalStateException("Evidence vanished after creation"));
+  }
+
+  /**
+   * Rejects an evidence citation whose page anchor does not resolve to a real page of this
+   * document. Both fields stay optional — an unanchored citation is legal — but a supplied anchor
+   * must exist, and when both are supplied they must name the same page.
+   *
+   * <p>The document itself was already tenant-checked by {@link #requireDocument}; this reads the
+   * page set through the same tenant-scoped repository call, so a page from another tenant or
+   * document can never validate.
+   */
+  private void validatePageReference(
+      UUID tenantId,
+      UUID userId,
+      UUID documentId,
+      @Nullable UUID pageId,
+      @Nullable Integer pageNumber) {
+    if (pageId == null && pageNumber == null) {
+      return;
+    }
+    List<DocumentData.Page> pages = documents.listDocumentPages(tenantId, userId, documentId);
+    DocumentData.Page byId = null;
+    DocumentData.Page byNumber = null;
+    if (pageId != null) {
+      byId = pages.stream().filter(page -> page.id().equals(pageId)).findFirst().orElse(null);
+      if (byId == null) {
+        throw ApiException.validation("pageId does not belong to this document");
+      }
+    }
+    if (pageNumber != null) {
+      byNumber =
+          pages.stream().filter(page -> page.pageNumber() == pageNumber).findFirst().orElse(null);
+      if (byNumber == null) {
+        throw ApiException.validation(
+            "pageNumber " + pageNumber + " is not a page of this document");
+      }
+    }
+    if (byId != null && byNumber != null && !byId.id().equals(byNumber.id())) {
+      throw ApiException.validation("pageId and pageNumber refer to different pages");
+    }
   }
 
   /**

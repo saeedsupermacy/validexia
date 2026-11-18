@@ -6,6 +6,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.validexia.identity.infrastructure.DirectoryRepository;
 import com.validexia.support.TestClerkConfig;
 import com.validexia.support.TestDatabase;
@@ -54,6 +56,8 @@ class DocumentsFlowTest {
   @Autowired DirectoryRepository directory;
 
   private final JdbcTemplate admin = TestDatabase.adminJdbc();
+
+  private static final JsonMapper json = JsonMapper.builder().build();
 
   private String token(String subject) throws Exception {
     return TestTokens.mint(
@@ -121,12 +125,7 @@ class DocumentsFlowTest {
     UUID tenantId = tenantWithMember(subject);
 
     String body = upload(token, tenantId, pdfWithPages(3), "questionnaire.pdf");
-    String documentId =
-        com.fasterxml.jackson.databind.json.JsonMapper.builder()
-            .build()
-            .readTree(body)
-            .get("id")
-            .asText();
+    String documentId = json.readTree(body).get("id").asText();
 
     // Page boundaries survived extraction: one row per page, in order, with hashes.
     mvc.perform(
@@ -166,12 +165,7 @@ class DocumentsFlowTest {
     String tokenA = token(subjectA);
     UUID tenantA = tenantWithMember(subjectA);
     String body = upload(tokenA, tenantA, pdfWithPages(1), "a.pdf");
-    String documentId =
-        com.fasterxml.jackson.databind.json.JsonMapper.builder()
-            .build()
-            .readTree(body)
-            .get("id")
-            .asText();
+    String documentId = json.readTree(body).get("id").asText();
 
     String subjectB = "doc-b-" + UUID.randomUUID();
     String tokenB = token(subjectB);
@@ -223,5 +217,141 @@ class DocumentsFlowTest {
                 .file(new MockMultipartFile("file", "q.pdf", "application/pdf", pdfWithPages(1)))
                 .header("Authorization", "Bearer " + token))
         .andExpect(status().isBadRequest());
+  }
+
+  // ---- M2: evidence page-reference validation ----------------------------------------
+
+  /** Posts one evidence citation and returns the HTTP status, for assertion. */
+  private int evidenceStatus(String token, UUID tenantId, String documentId, String body)
+      throws Exception {
+    return mvc.perform(
+            post("/api/v1/documents/" + documentId + "/evidence")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType("application/json")
+                .content(body))
+        .andReturn()
+        .getResponse()
+        .getStatus();
+  }
+
+  private JsonNode pagesOf(String token, UUID tenantId, String documentId) throws Exception {
+    String body =
+        mvc.perform(
+                get("/api/v1/documents/" + documentId + "/pages")
+                    .header("Authorization", "Bearer " + token)
+                    .header("X-Tenant-Id", tenantId))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    return json.readTree(body);
+  }
+
+  private String documentId(String token, UUID tenantId, int pages, String fileName)
+      throws Exception {
+    return json.readTree(upload(token, tenantId, pdfWithPages(pages), fileName)).get("id").asText();
+  }
+
+  @Test
+  void evidenceAcceptsValidAndUnanchoredPageReferences() throws Exception {
+    String subject = "doc-ev-ok-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String documentId = documentId(token, tenantId, 3, "ev.pdf");
+    JsonNode pages = pagesOf(token, tenantId, documentId);
+    String page1 = pages.get(0).get("id").asText();
+    String page2 = pages.get(1).get("id").asText();
+
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200,
+        evidenceStatus(
+            token, tenantId, documentId, "{\"pageNumber\":2,\"quoteText\":\"by number\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200,
+        evidenceStatus(
+            token, tenantId, documentId, "{\"pageId\":\"" + page1 + "\",\"quoteText\":\"by id\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200,
+        evidenceStatus(
+            token,
+            tenantId,
+            documentId,
+            "{\"pageId\":\"" + page2 + "\",\"pageNumber\":2,\"quoteText\":\"both agree\"}"));
+    // Unanchored evidence stays legal.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, evidenceStatus(token, tenantId, documentId, "{\"quoteText\":\"unanchored\"}"));
+  }
+
+  @Test
+  void evidenceRejectsFabricatedPageReferences() throws Exception {
+    String subject = "doc-ev-bad-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String documentId = documentId(token, tenantId, 2, "ev.pdf");
+    String page1 = pagesOf(token, tenantId, documentId).get(0).get("id").asText();
+
+    // Out-of-range and non-positive page numbers.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400,
+        evidenceStatus(token, tenantId, documentId, "{\"pageNumber\":999,\"quoteText\":\"x\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, evidenceStatus(token, tenantId, documentId, "{\"pageNumber\":0,\"quoteText\":\"x\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400,
+        evidenceStatus(token, tenantId, documentId, "{\"pageNumber\":-1,\"quoteText\":\"x\"}"));
+    // Unknown page id.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400,
+        evidenceStatus(
+            token,
+            tenantId,
+            documentId,
+            "{\"pageId\":\"" + UUID.randomUUID() + "\",\"quoteText\":\"x\"}"));
+    // Id and number name different pages.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400,
+        evidenceStatus(
+            token,
+            tenantId,
+            documentId,
+            "{\"pageId\":\"" + page1 + "\",\"pageNumber\":2,\"quoteText\":\"x\"}"));
+  }
+
+  @Test
+  void evidenceCannotReferenceAnotherDocumentsPage() throws Exception {
+    String subject = "doc-ev-xdoc-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String docA = documentId(token, tenantId, 2, "a.pdf");
+    String docB = documentId(token, tenantId, 1, "b.pdf");
+    String pageA = pagesOf(token, tenantId, docA).get(0).get("id").asText();
+
+    // A page id owned by document A.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400,
+        evidenceStatus(
+            token, tenantId, docB, "{\"pageId\":\"" + pageA + "\",\"quoteText\":\"x\"}"));
+    // Page 2 exists in A but not in the single-page B.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, evidenceStatus(token, tenantId, docB, "{\"pageNumber\":2,\"quoteText\":\"x\"}"));
+  }
+
+  @Test
+  void crossTenantEvidenceCreationIsRejected() throws Exception {
+    String subjectA = "doc-ev-a-" + UUID.randomUUID();
+    String tokenA = token(subjectA);
+    UUID tenantA = tenantWithMember(subjectA);
+    String documentId = documentId(tokenA, tenantA, 1, "a.pdf");
+
+    String subjectB = "doc-ev-b-" + UUID.randomUUID();
+    String tokenB = token(subjectB);
+    UUID tenantB = tenantWithMember(subjectB);
+
+    // Tenant B cannot cite tenant A's document, anchored or not.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        404, evidenceStatus(tokenB, tenantB, documentId, "{\"pageNumber\":1,\"quoteText\":\"x\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        404, evidenceStatus(tokenB, tenantB, documentId, "{\"quoteText\":\"x\"}"));
   }
 }
