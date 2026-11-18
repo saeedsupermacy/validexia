@@ -70,6 +70,26 @@ There are no retries anywhere in this path: the provider makes one call, the gat
 failures unchanged, and the engine settles a failed task without re-executing it. The invalid-key
 case is an HTTP 401 and is not billed by the provider.
 
+## Pacing (Groq runs)
+
+Groq's free plan allows 8,000 tokens per minute for `openai/gpt-oss-120b`, and the first Groq
+run (2026-11-18) lost three of its seven calls to HTTP 429 token errors: the first three calls
+alone used 8,147 actual tokens back-to-back. When the evaluated provider is Groq, the main
+sequence therefore paces the call-making cases with a rolling one-minute token budget
+(`LiveEvalPacer`): before each such case, the harness sums the actual tokens of the counted
+calls completed inside the trailing 60 seconds, adds a 3,600-token reserve for the next call,
+and waits — if needed — until the total fits a 7,000-token budget (1,000 under the published
+limit). Each wait is recorded as a note on the case it precedes.
+
+Pacing only ever waits. It never retries, never adds or hides a call, and every invocation
+still passes through the counting guard exactly once — the hard cap (12) and the exact
+planned-call accounting (7) are unchanged. Two assumptions are documented in `LiveEvalPacer`
+and worth knowing: the window is treated as rolling (Groq does not publish whether it is
+rolling or fixed-minute), and calls are charged at actual tokens (the 2026-11-18 run's pattern
+supports this — the rejections began exactly when cumulative actual tokens passed 8,000). If
+a call is rate-limited anyway, the case is classified `rate-limited-inconclusive` and the
+evaluation fails; pacing is a mitigation, not a guarantee.
+
 ## Running it
 
 The supported route is the GitHub Actions workflow **Live Vendor Brief Evaluation**

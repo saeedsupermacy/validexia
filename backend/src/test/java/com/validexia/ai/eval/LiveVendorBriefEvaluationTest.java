@@ -75,6 +75,13 @@ import tools.jackson.databind.node.ObjectNode;
  * delegate's own provider name), so the wrapper's gateway-facing name never appears in provenance —
  * case (h) asserts exactly that.
  *
+ * <p><b>Pacing.</b> When the evaluated provider is Groq, cases that make a provider call are paced
+ * by {@link LiveEvalPacer}: a rolling one-minute token budget over the counting guard's recorded
+ * history, so the run stays inside Groq's free-plan per-minute token limit (the first Groq run,
+ * 2026-11-18, lost three calls to HTTP 429 token errors by firing them back-to-back). Pacing only
+ * ever waits — it never retries, never adds or hides a call, and the hard cap and the exactly-7
+ * accounting below are unchanged.
+ *
  * <p><b>What "passing" means.</b> Automated gates are STRUCTURAL: run states, abstention shape,
  * citation integrity re-checked against the persisted record snapshot (mirroring {@code
  * VendorBriefSupport}'s rules — that class is package-private to the vendors intelligence package,
@@ -126,6 +133,7 @@ class LiveVendorBriefEvaluationTest {
         int inputTokens,
         int outputTokens,
         long durationMs,
+        long completedAtMs,
         String failure) {}
 
     private final ModelProvider delegate;
@@ -167,6 +175,7 @@ class LiveVendorBriefEvaluationTest {
                 response.inputTokens(),
                 response.outputTokens(),
                 (System.nanoTime() - startedNanos) / 1_000_000,
+                System.currentTimeMillis(),
                 null));
         return response;
       } catch (RuntimeException e) {
@@ -181,6 +190,7 @@ class LiveVendorBriefEvaluationTest {
                 0,
                 0,
                 (System.nanoTime() - startedNanos) / 1_000_000,
+                System.currentTimeMillis(),
                 failure));
         throw e;
       }
@@ -486,6 +496,34 @@ class LiveVendorBriefEvaluationTest {
   // Run bookkeeping
   // ---------------------------------------------------------------------------
 
+  /**
+   * Waits, when the evaluated provider is Groq, until the next provider call fits the rolling
+   * per-minute token budget (see {@link LiveEvalPacer}). A no-op for other providers and when no
+   * wait is needed. The wait is recorded as a note on the case it precedes, so the report shows
+   * exactly where time was spent pacing.
+   */
+  private void pace(CaseResult result) throws InterruptedException {
+    if (!"groq".equals(LiveEvalProviders.selection())) {
+      return;
+    }
+    List<LiveEvalPacer.CallFact> history =
+        counting.calls().stream()
+            .map(
+                call ->
+                    new LiveEvalPacer.CallFact(
+                        call.completedAtMs(), call.inputTokens() + call.outputTokens()))
+            .toList();
+    long waitMs = LiveEvalPacer.millisToWait(history, System.currentTimeMillis());
+    if (waitMs > 0) {
+      result.notes.add(
+          "pacing: waited "
+              + waitMs
+              + " ms before this case's provider call to stay within the per-minute token"
+              + " budget (see LiveEvalPacer)");
+      Thread.sleep(waitMs);
+    }
+  }
+
   /** Records the counting-guard window around one case's run. */
   private void snapshotCallsBefore(CaseResult result) {
     result.callsBefore = counting.invocations();
@@ -629,6 +667,7 @@ class LiveVendorBriefEvaluationTest {
 
       for (int i = 0; i < richIds.size(); i++) {
         CaseResult result = new CaseResult("a" + (i + 1), "Rich synthetic record #" + (i + 1));
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, richIds.get(i), "live-eval-rich-" + (i + 1));
         snapshotCallsAfter(result);
@@ -683,6 +722,7 @@ class LiveVendorBriefEvaluationTest {
                 null,
                 false,
                 List.of());
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, thinId, "live-eval-thin");
         snapshotCallsAfter(result);
@@ -763,6 +803,7 @@ class LiveVendorBriefEvaluationTest {
                 List.of(
                     new VendorData.DependentSystemInput(
                         "Statement fulfilment", "Customer correspondence data", "UK")));
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, vendorId, "live-eval-inj-" + (i + 1));
         snapshotCallsAfter(result);
@@ -850,6 +891,7 @@ class LiveVendorBriefEvaluationTest {
                 List.of(
                     new VendorData.DependentSystemInput(
                         "Ticketing platform", "Customer support tickets", "CA")));
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, claimId, "live-eval-claim");
         snapshotCallsAfter(result);
