@@ -259,5 +259,15 @@ class LiveProviderFailureEvaluationTest {
         1, counting.invocations(), "exactly one counted invocation for the whole failed run");
     assertEquals(1, counting.calls().size());
     assertEquals("PROVIDER_ERROR", counting.calls().get(0).failure());
+    assertEquals(
+        LiveEvalOutcomes.Outcome.PROVIDER_ERROR,
+        LiveEvalOutcomes.classify(
+            true,
+            counting.invocations(),
+            counting.calls().get(0).failure() != null,
+            briefTask.path("error").asText(""),
+            false,
+            false),
+        "in the evaluation's outcome taxonomy this case is a provider-error");
   }
 }

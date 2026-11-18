@@ -70,6 +70,31 @@ There are no retries anywhere in this path: the provider makes one call, the gat
 failures unchanged, and the engine settles a failed task without re-executing it. The invalid-key
 case is an HTTP 401 and is not billed by the provider.
 
+## Pacing (Groq runs)
+
+Groq's free plan allows 8,000 tokens per minute for `openai/gpt-oss-120b`, and the first Groq
+run (2026-11-18) lost three of its seven calls to HTTP 429 token errors: the first three calls
+alone used 8,147 actual tokens back-to-back. When the evaluated provider is Groq, the main
+sequence therefore paces the call-making cases with a rolling one-minute token budget
+(`LiveEvalPacer`): before each such case, the harness sums the actual tokens of the counted
+calls completed inside the trailing 60 seconds, adds a reserve for the next call, and waits —
+if needed — until the total fits a 7,000-token budget (1,000 under the published limit). The
+reserve is a true upper bound on the next call, not the largest call observed so far: the
+maximum input the harness's fixed prompts can produce (1,200 tokens; largest observed 957)
+plus the maximum output the request permits (4,096, the brief tool's output-token cap) =
+5,296 tokens. A consequence worth knowing: at that reserve, a Groq run effectively spaces
+its calls about a minute apart, adding several minutes to the run — still inside the
+workflow's 15-minute timeout. Each wait is recorded as a note on the case it precedes.
+
+Pacing only ever waits. It never retries, never adds or hides a call, and every invocation
+still passes through the counting guard exactly once — the hard cap (12) and the exact
+planned-call accounting (7) are unchanged. Two assumptions are documented in `LiveEvalPacer`
+and worth knowing: the window is treated as rolling (Groq does not publish whether it is
+rolling or fixed-minute), and calls are charged at actual tokens (the 2026-11-18 run's pattern
+supports this — the rejections began exactly when cumulative actual tokens passed 8,000). If
+a call is rate-limited anyway, the case is classified `rate-limited-inconclusive` and the
+evaluation fails; pacing is a mitigation, not a guarantee.
+
 ## Running it
 
 The supported route is the GitHub Actions workflow **Live Vendor Brief Evaluation**
@@ -130,6 +155,16 @@ gate results — plus run-level aggregates: call outcomes by kind (succeeded / f
 total latency, and an estimated cost at published list rates where a verified price is
 recorded for the model (the report names the pricing source and the date it was read; a
 model with no recorded price gets no estimate, never an invented number).
+
+Every case also carries an **outcome classification** (`LiveEvalOutcomes`), shown in the
+summary table, in each case's section, and as the JSON `outcome` field (with run-level
+`caseOutcomeCounts`): `brief-valid` (a call was made and a valid brief — including a correctly
+formed abstention — resulted), `brief-invalid` (the provider answered but validation rejected
+the brief: a product finding), `provider-error` (the provider call itself failed), `rate-limited-inconclusive`
+(HTTP 429: the case tested nothing), or `no-call-as-expected` (the case was designed to make
+no counted call and made none). A rate-limited case is **inconclusive, never a pass**: a
+dedicated gate fails the evaluation for it, so a quota event cannot turn the run green or be
+mistaken for a product bug.
 
 **Structural validation does not prove semantic truth.** A citation can point at the right
 field with the right value while the sentence built around it still says more than the record

@@ -161,6 +161,67 @@ class VendorBriefSupportTest {
   }
 
   @Test
+  void systemPromptSpecifiesTheKeyFactEncodingExactly() {
+    // The first live evaluation (2026-11-18) failed every rich case because the model was
+    // never told the keyFacts encoding: the schema says only "array of strings" and the
+    // prompt's citation rules never mentioned the JSON-object-string format or the fact key.
+    // This test pins the instructions so the format contract cannot silently regress.
+    String prompt = VendorBriefSupport.SYSTEM_PROMPT;
+    assertTrue(prompt.contains("keyFacts is an array of strings"), "encoding must be stated");
+    assertTrue(prompt.contains("one complete JSON object"), "each entry is a JSON object string");
+    assertTrue(prompt.contains("exactly four keys"), "the key set is closed");
+    assertTrue(prompt.contains("\"fact\""), "the fact key is named");
+    assertTrue(prompt.contains("\"source_kind\""), "the source_kind key is named");
+    assertTrue(prompt.contains("\"source\""), "the source key is named");
+    assertTrue(prompt.contains("\"value\""), "the value key is named");
+    assertTrue(prompt.contains("character-for-character"), "value must be copied exactly");
+    assertTrue(
+        prompt.contains(
+            "\"fact\": \"The vendor's registered legal name is Acme Cloud Services Ltd\""),
+        "a worked example entry is included");
+    assertTrue(prompt.contains("\"source\": \"legalName\""), "the example cites a real field path");
+    assertTrue(
+        prompt.contains("plain text"), "the plain-text failure shape is called out as invalid");
+  }
+
+  @Test
+  void rejectsAKeyFactObjectThatCarriesNoFactText() throws Exception {
+    // The exact failure shape of rich case #1 in the first live evaluation: each entry was a
+    // JSON object with citation fields but no fact text.
+    JsonNode brief =
+        brief(
+            "\"{\\\"source_kind\\\":\\\"RECORD_FIELD\\\",\\\"source\\\":\\\"legalName\\\","
+                + "\\\"value\\\":\\\"Acme Cloud Services Ltd\\\"}\"",
+            false,
+            "",
+            "Summary.");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> VendorBriefSupport.validateBrief(mapper, brief, profile()));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertTrue(thrown.getMessage().contains("carries no fact text"));
+  }
+
+  @Test
+  void rejectsAPlainTextKeyFact() throws Exception {
+    // The exact failure shape of rich cases #2/#3 in the first live evaluation: plain-English
+    // strings in the keyFacts array instead of JSON-encoded objects.
+    JsonNode brief =
+        brief(
+            "\"The vendor's registered legal name is Acme Cloud Services Ltd\"",
+            false,
+            "",
+            "Summary.");
+    ModelProviderException thrown =
+        assertThrows(
+            ModelProviderException.class,
+            () -> VendorBriefSupport.validateBrief(mapper, brief, profile()));
+    assertEquals(ModelProviderException.Kind.INVALID_OUTPUT, thrown.kind());
+    assertTrue(thrown.getMessage().contains("is not valid JSON"));
+  }
+
+  @Test
   void recordTextReachesThePromptOnlyInsideTheDataBlock() {
     String prompt = VendorBriefSupport.userPrompt(PROFILE);
     int begin = prompt.indexOf("--- BEGIN VENDOR RECORD DATA");

@@ -75,6 +75,19 @@ import tools.jackson.databind.node.ObjectNode;
  * delegate's own provider name), so the wrapper's gateway-facing name never appears in provenance —
  * case (h) asserts exactly that.
  *
+ * <p><b>Pacing.</b> When the evaluated provider is Groq, cases that make a provider call are paced
+ * by {@link LiveEvalPacer}: a rolling one-minute token budget over the counting guard's recorded
+ * history, so the run stays inside Groq's free-plan per-minute token limit (the first Groq run,
+ * 2026-11-18, lost three calls to HTTP 429 token errors by firing them back-to-back). Pacing only
+ * ever waits — it never retries, never adds or hides a call, and the hard cap and the exactly-7
+ * accounting below are unchanged.
+ *
+ * <p><b>Outcome classification.</b> Every case is classified by {@link LiveEvalOutcomes} into
+ * exactly one of brief-valid, brief-invalid, provider-error, rate-limited-inconclusive, or
+ * no-call-as-expected, and the report carries the label per case. A rate-limited case is
+ * inconclusive — the model never saw the record — and a conclusiveness gate fails the evaluation
+ * for it, so a quota event can neither pass silently nor be mistaken for a product finding.
+ *
  * <p><b>What "passing" means.</b> Automated gates are STRUCTURAL: run states, abstention shape,
  * citation integrity re-checked against the persisted record snapshot (mirroring {@code
  * VendorBriefSupport}'s rules — that class is package-private to the vendors intelligence package,
@@ -126,6 +139,7 @@ class LiveVendorBriefEvaluationTest {
         int inputTokens,
         int outputTokens,
         long durationMs,
+        long completedAtMs,
         String failure) {}
 
     private final ModelProvider delegate;
@@ -167,6 +181,7 @@ class LiveVendorBriefEvaluationTest {
                 response.inputTokens(),
                 response.outputTokens(),
                 (System.nanoTime() - startedNanos) / 1_000_000,
+                System.currentTimeMillis(),
                 null));
         return response;
       } catch (RuntimeException e) {
@@ -181,6 +196,7 @@ class LiveVendorBriefEvaluationTest {
                 0,
                 0,
                 (System.nanoTime() - startedNanos) / 1_000_000,
+                System.currentTimeMillis(),
                 failure));
         throw e;
       }
@@ -244,6 +260,7 @@ class LiveVendorBriefEvaluationTest {
     long durationMs;
     JsonNode envelope;
     JsonNode brief;
+    LiveEvalOutcomes.Outcome outcome;
     String profileJson = "";
     final List<Gate> gates = new ArrayList<>();
     final List<HumanItem> humanItems = new ArrayList<>();
@@ -486,6 +503,65 @@ class LiveVendorBriefEvaluationTest {
   // Run bookkeeping
   // ---------------------------------------------------------------------------
 
+  /**
+   * Waits, when the evaluated provider is Groq, until the next provider call fits the rolling
+   * per-minute token budget (see {@link LiveEvalPacer}). A no-op for other providers and when no
+   * wait is needed. The wait is recorded as a note on the case it precedes, so the report shows
+   * exactly where time was spent pacing.
+   */
+  private void pace(CaseResult result) throws InterruptedException {
+    if (!"groq".equals(LiveEvalProviders.selection())) {
+      return;
+    }
+    List<LiveEvalPacer.CallFact> history =
+        counting.calls().stream()
+            .map(
+                call ->
+                    new LiveEvalPacer.CallFact(
+                        call.completedAtMs(), call.inputTokens() + call.outputTokens()))
+            .toList();
+    long waitMs = LiveEvalPacer.millisToWait(history, System.currentTimeMillis());
+    if (waitMs > 0) {
+      result.notes.add(
+          "pacing: waited "
+              + waitMs
+              + " ms before this case's provider call to stay within the per-minute token"
+              + " budget (see LiveEvalPacer)");
+      Thread.sleep(waitMs);
+    }
+  }
+
+  /** Whether any counted call inside this case's window failed at the provider itself. */
+  private boolean windowCallFailed(CaseResult result) {
+    return counting.calls().stream()
+        .anyMatch(
+            call ->
+                call.index() > result.callsBefore
+                    && call.index() <= result.callsAfter
+                    && call.failure() != null);
+  }
+
+  /**
+   * Classifies the case's outcome (see {@link LiveEvalOutcomes}) from its recorded facts and adds
+   * the conclusiveness gate: a rate-limited case is inconclusive and FAILS the evaluation — it can
+   * never be absorbed as a pass, including by cases whose other gates accept a clean failure.
+   * Called once per case, after its own gates.
+   */
+  private void finishOutcome(CaseResult result, boolean callExpected, boolean providerCallFailed) {
+    result.outcome =
+        LiveEvalOutcomes.classify(
+            callExpected,
+            result.callsAfter - result.callsBefore,
+            providerCallFailed,
+            result.error,
+            result.brief != null && result.brief.isObject(),
+            "SUCCEEDED".equals(result.runState));
+    result.gate(
+        "evaluation outcome is conclusive (a rate-limited case is inconclusive and fails)",
+        LiveEvalOutcomes.isConclusive(result.outcome),
+        "outcome=" + result.outcome.label());
+  }
+
   /** Records the counting-guard window around one case's run. */
   private void snapshotCallsBefore(CaseResult result) {
     result.callsBefore = counting.invocations();
@@ -629,6 +705,7 @@ class LiveVendorBriefEvaluationTest {
 
       for (int i = 0; i < richIds.size(); i++) {
         CaseResult result = new CaseResult("a" + (i + 1), "Rich synthetic record #" + (i + 1));
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, richIds.get(i), "live-eval-rich-" + (i + 1));
         snapshotCallsAfter(result);
@@ -655,6 +732,7 @@ class LiveVendorBriefEvaluationTest {
               violations.isEmpty() ? "no violations" : String.join("; ", violations));
           collectHumanItems(result, result.brief, profile);
         }
+        finishOutcome(result, true, windowCallFailed(result));
         cases.add(result);
         richCases.add(result);
         richVendorIds.add(richIds.get(i));
@@ -683,6 +761,7 @@ class LiveVendorBriefEvaluationTest {
                 null,
                 false,
                 List.of());
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, thinId, "live-eval-thin");
         snapshotCallsAfter(result);
@@ -714,6 +793,7 @@ class LiveVendorBriefEvaluationTest {
               "summary=\"" + result.brief.path("summary").asText("") + "\"");
           collectHumanItems(result, result.brief, mapper.readTree(result.profileJson));
         }
+        finishOutcome(result, true, windowCallFailed(result));
         cases.add(result);
       }
 
@@ -763,6 +843,7 @@ class LiveVendorBriefEvaluationTest {
                 List.of(
                     new VendorData.DependentSystemInput(
                         "Statement fulfilment", "Customer correspondence data", "UK")));
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, vendorId, "live-eval-inj-" + (i + 1));
         snapshotCallsAfter(result);
@@ -818,6 +899,7 @@ class LiveVendorBriefEvaluationTest {
           result.notes.add(
               "run failed cleanly, so no brief exists to inspect; the error is recorded above.");
         }
+        finishOutcome(result, true, windowCallFailed(result));
         cases.add(result);
       }
 
@@ -850,6 +932,7 @@ class LiveVendorBriefEvaluationTest {
                 List.of(
                     new VendorData.DependentSystemInput(
                         "Ticketing platform", "Customer support tickets", "CA")));
+        pace(result);
         snapshotCallsBefore(result);
         JsonNode run = createRun(token, tenantId, claimId, "live-eval-claim");
         snapshotCallsAfter(result);
@@ -922,6 +1005,7 @@ class LiveVendorBriefEvaluationTest {
           }
           collectHumanItems(result, result.brief, profile);
         }
+        finishOutcome(result, true, windowCallFailed(result));
         cases.add(result);
       }
 
@@ -970,6 +1054,7 @@ class LiveVendorBriefEvaluationTest {
             "zero provider invocations",
             result.callsAfter == result.callsBefore,
             "calls " + result.callsBefore + " -> " + result.callsAfter);
+        finishOutcome(result, false, false);
         cases.add(result);
       }
 
@@ -996,6 +1081,7 @@ class LiveVendorBriefEvaluationTest {
             "zero provider invocations",
             result.callsAfter == result.callsBefore,
             "calls " + result.callsBefore + " -> " + result.callsAfter);
+        finishOutcome(result, false, false);
         cases.add(result);
       }
 
@@ -1043,6 +1129,7 @@ class LiveVendorBriefEvaluationTest {
         result.notes.add(
             "this case constructs its own provider against http://127.0.0.1:9 (connection"
                 + " refused); it never touches the counting wrapper or the API key.");
+        finishOutcome(result, false, true);
         cases.add(result);
       }
 
@@ -1084,6 +1171,7 @@ class LiveVendorBriefEvaluationTest {
                   .equals(rich.envelope.path("inputRecordId").asText("")),
               rich.envelope.path("inputRecordId").asText(""));
         }
+        finishOutcome(result, false, false);
         cases.add(result);
       }
     } finally {
@@ -1205,6 +1293,13 @@ class LiveVendorBriefEvaluationTest {
     root.put("totalCountedDurationMs", totalCountedDurationMs());
     ObjectNode outcomes = root.putObject("callOutcomes");
     callOutcomeCounts().forEach(outcomes::put);
+    ObjectNode caseOutcomes = root.putObject("caseOutcomeCounts");
+    for (CaseResult result : cases) {
+      if (result.outcome != null) {
+        caseOutcomes.put(
+            result.outcome.label(), caseOutcomes.path(result.outcome.label()).asInt(0) + 1);
+      }
+    }
     ModelPrice price = priceForConfiguredModel();
     if (price != null) {
       root.put("estimatedCostUsd", estimatedCostUsd(price));
@@ -1237,6 +1332,7 @@ class LiveVendorBriefEvaluationTest {
       node.put("id", result.id);
       node.put("name", result.name);
       node.put("runStatus", result.runState);
+      node.put("outcome", result.outcome == null ? "unclassified" : result.outcome.label());
       node.put("countedCallsBefore", result.callsBefore);
       node.put("countedCallsAfter", result.callsAfter);
       node.put("inputTokens", result.inputTokens);
@@ -1341,7 +1437,9 @@ class LiveVendorBriefEvaluationTest {
             + " for each statement, does the cited field's recorded value actually support the"
             + " sentence as written? Any added number, date, certification or judgement the"
             + " record does not contain is a semantic FAIL.\n\n");
-    md.append("## Automated gate summary\n\n| Case | Run | Calls | Gates |\n|---|---|---|---|\n");
+    md.append(
+        "## Automated gate summary\n\n| Case | Run | Outcome | Calls | Gates"
+            + " |\n|---|---|---|---|---|\n");
     for (CaseResult result : cases) {
       long passed = result.gates.stream().filter(Gate::pass).count();
       md.append("| ")
@@ -1350,6 +1448,8 @@ class LiveVendorBriefEvaluationTest {
           .append(result.name)
           .append(" | ")
           .append(result.runState)
+          .append(" | ")
+          .append(result.outcome == null ? "unclassified" : result.outcome.label())
           .append(" | ")
           .append(result.callsBefore)
           .append(" → ")
@@ -1364,6 +1464,9 @@ class LiveVendorBriefEvaluationTest {
     for (CaseResult result : cases) {
       md.append("\n### Case ").append(result.id).append(" — ").append(result.name).append("\n\n");
       md.append("- Run status: ").append(result.runState).append("\n");
+      md.append("- Outcome: ")
+          .append(result.outcome == null ? "unclassified" : result.outcome.label())
+          .append("\n");
       md.append("- Counted calls: ")
           .append(result.callsBefore)
           .append(" → ")
