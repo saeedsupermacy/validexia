@@ -77,9 +77,14 @@ run (2026-11-18) lost three of its seven calls to HTTP 429 token errors: the fir
 alone used 8,147 actual tokens back-to-back. When the evaluated provider is Groq, the main
 sequence therefore paces the call-making cases with a rolling one-minute token budget
 (`LiveEvalPacer`): before each such case, the harness sums the actual tokens of the counted
-calls completed inside the trailing 60 seconds, adds a 3,600-token reserve for the next call,
-and waits — if needed — until the total fits a 7,000-token budget (1,000 under the published
-limit). Each wait is recorded as a note on the case it precedes.
+calls completed inside the trailing 60 seconds, adds a reserve for the next call, and waits —
+if needed — until the total fits a 7,000-token budget (1,000 under the published limit). The
+reserve is a true upper bound on the next call, not the largest call observed so far: the
+maximum input the harness's fixed prompts can produce (1,200 tokens; largest observed 957)
+plus the maximum output the request permits (4,096, the brief tool's output-token cap) =
+5,296 tokens. A consequence worth knowing: at that reserve, a Groq run effectively spaces
+its calls about a minute apart, adding several minutes to the run — still inside the
+workflow's 15-minute timeout. Each wait is recorded as a note on the case it precedes.
 
 Pacing only ever waits. It never retries, never adds or hides a call, and every invocation
 still passes through the counting guard exactly once — the hard cap (12) and the exact

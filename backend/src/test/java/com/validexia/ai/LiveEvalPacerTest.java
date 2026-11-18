@@ -30,17 +30,42 @@ class LiveEvalPacerTest {
 
   @Test
   void callsFittingTheBudgetWithTheReserveMeanNoWait() {
-    // One 3,000-token call in the window: 3,000 + 3,600 reserve <= 7,000 budget.
-    assertEquals(0, LiveEvalPacer.millisToWait(List.of(call(90_000, 3_000)), 100_000));
+    // One 1,500-token call in the window: 1,500 + 5,296 reserve <= 7,000 budget.
+    assertEquals(0, LiveEvalPacer.millisToWait(List.of(call(90_000, 1_500)), 100_000));
   }
 
   @Test
-  void theObservedGroqRunWouldHaveWaitedForTheOldestCallToAgeOut() {
+  void theObservedGroqRunWouldHaveWaitedForTheWindowToClear() {
     // The 2026-11-18 run's first two calls: 3,086 and 2,705 actual tokens. Before a third call
-    // at t=25s: 5,791 in window + 3,600 reserve > 7,000, so the pacer waits until the first
-    // call leaves the 60-second window (t=10s + 60s = t=70s), i.e. 45 seconds.
+    // at t=25s: 5,791 in window + the 5,296 maximum-size reserve exceeds the budget even after
+    // the oldest call ages out (2,705 + 5,296 = 8,001 > 7,000), so the pacer waits until BOTH
+    // calls have left the window — the second at t=20s + 60s = t=80s, i.e. 55 seconds.
     List<CallFact> history = List.of(call(10_000, 3_086), call(20_000, 2_705));
-    assertEquals(45_000, LiveEvalPacer.millisToWait(history, 25_000));
+    assertEquals(55_000, LiveEvalPacer.millisToWait(history, 25_000));
+  }
+
+  @Test
+  void aMaximumSizeNextCallCannotPushThePlannedTotalAboveTheBudget() {
+    // One 1,800-token call completed at t=10s; deciding at t=20s. An observation-based reserve
+    // (3,600, above the largest call seen in the first run) would have allowed the next call
+    // immediately: 1,800 + 3,600 = 5,400 <= 7,000. But a next call at its maximum permitted
+    // size (5,296) would take the true rolling total to 1,800 + 5,296 = 7,096 — above the
+    // pacing budget. The pacer must therefore wait until the 1,800-token call ages out
+    // (t=10s + 60s = t=70s), i.e. 50 seconds.
+    List<CallFact> history = List.of(call(10_000, 1_800));
+    long wait = LiveEvalPacer.millisToWait(history, 20_000);
+    assertEquals(50_000, wait);
+    // And after waiting, the planned total — what remains in the window plus a maximum-size
+    // next call — is within the budget by construction.
+    long atMs = 20_000 + wait;
+    long inWindowAfterWait =
+        history.stream()
+            .filter(fact -> fact.completedAtMs() > atMs - LiveEvalPacer.WINDOW_MS)
+            .mapToLong(CallFact::totalTokens)
+            .sum();
+    assertTrue(
+        inWindowAfterWait + LiveEvalPacer.NEXT_CALL_RESERVE_TOKENS
+            <= LiveEvalPacer.TOKEN_BUDGET_PER_WINDOW);
   }
 
   @Test
@@ -51,10 +76,10 @@ class LiveEvalPacerTest {
 
   @Test
   void dropsOnlyAsManyOldCallsAsNeeded() {
-    // Three 3,000-token calls at t=50s/52s/54s, deciding at t=55s: dropping the oldest still
-    // leaves 6,000 + 3,600 > 7,000, so two must age out; the wait ends when the second-oldest
+    // Three 1,200-token calls at t=50s/52s/54s, deciding at t=55s: dropping the oldest still
+    // leaves 2,400 + 5,296 > 7,000, so two must age out; the wait ends when the second-oldest
     // leaves the window (t=52s + 60s = t=112s), i.e. 57 seconds.
-    List<CallFact> history = List.of(call(50_000, 3_000), call(52_000, 3_000), call(54_000, 3_000));
+    List<CallFact> history = List.of(call(50_000, 1_200), call(52_000, 1_200), call(54_000, 1_200));
     assertEquals(57_000, LiveEvalPacer.millisToWait(history, 55_000));
   }
 
@@ -68,11 +93,26 @@ class LiveEvalPacerTest {
   @Test
   void budgetConstantsStayConservativeAgainstThePublishedGroqLimit() {
     // Groq's published free-plan limit for openai/gpt-oss-120b is 8,000 tokens per minute
-    // (read 2026-11-17). The pacing budget must stay below it, and the reserve must cover a
-    // realistic next call (largest observed: 3,086 tokens) without exceeding the budget alone.
+    // (read 2026-11-17). The pacing budget must stay below it.
     assertTrue(LiveEvalPacer.TOKEN_BUDGET_PER_WINDOW < 8_000);
-    assertTrue(LiveEvalPacer.NEXT_CALL_RESERVE_TOKENS >= 3_086);
     assertTrue(LiveEvalPacer.NEXT_CALL_RESERVE_TOKENS < LiveEvalPacer.TOKEN_BUDGET_PER_WINDOW);
     assertEquals(60_000, LiveEvalPacer.WINDOW_MS);
+  }
+
+  @Test
+  void theReserveIsTheMaximumPermittedNextCallNotTheLargestObserved() {
+    // The output side of the bound is the request's own hard cap — the brief tool's requests
+    // carry ModelRequest.DEFAULT_MAX_OUTPUT_TOKENS (4,096), which the adapters send as the
+    // completion-token limit. The reserve must be exactly max-input + that cap, so a next call
+    // at its maximum permitted size is what the budget plans for — never the smaller figure of
+    // the largest call that happened to be observed (3,086 in the first run).
+    assertEquals(4_096, ModelRequest.DEFAULT_MAX_OUTPUT_TOKENS);
+    assertEquals(
+        LiveEvalPacer.MAX_NEXT_CALL_INPUT_TOKENS + ModelRequest.DEFAULT_MAX_OUTPUT_TOKENS,
+        LiveEvalPacer.NEXT_CALL_RESERVE_TOKENS);
+    assertTrue(LiveEvalPacer.NEXT_CALL_RESERVE_TOKENS > 3_086);
+    // The input bound must cover the largest input actually observed (957 tokens, with the
+    // shorter pre-format-fix prompt) with headroom.
+    assertTrue(LiveEvalPacer.MAX_NEXT_CALL_INPUT_TOKENS >= 957);
   }
 }
