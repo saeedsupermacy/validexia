@@ -151,6 +151,16 @@ total latency, and an estimated cost at published list rates where a verified pr
 recorded for the model (the report names the pricing source and the date it was read; a
 model with no recorded price gets no estimate, never an invented number).
 
+Every case also carries an **outcome classification** (`LiveEvalOutcomes`), shown in the
+summary table, in each case's section, and as the JSON `outcome` field (with run-level
+`caseOutcomeCounts`): `brief-valid` (a call was made and a valid brief — including a correctly
+formed abstention — resulted), `brief-invalid` (the provider answered but validation rejected
+the brief: a product finding), `provider-error` (the provider call itself failed), `rate-limited-inconclusive`
+(HTTP 429: the case tested nothing), or `no-call-as-expected` (the case was designed to make
+no counted call and made none). A rate-limited case is **inconclusive, never a pass**: a
+dedicated gate fails the evaluation for it, so a quota event cannot turn the run green or be
+mistaken for a product bug.
+
 **Structural validation does not prove semantic truth.** A citation can point at the right
 field with the right value while the sentence built around it still says more than the record
 supports. The evaluation is therefore **not complete** until a human grades the report's
