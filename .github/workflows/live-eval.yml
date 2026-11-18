@@ -20,6 +20,13 @@ name: Live Vendor Brief Evaluation
 #
 # The workflow file must be on the default branch (main) before GitHub will
 # offer the dispatch button; the job additionally checks out main explicitly.
+#
+# Gradle is invoked as the installed `gradle` binary, NOT ./gradlew: the
+# wrapper scripts are not committed (only gradle/wrapper/gradle-wrapper.jar
+# and gradle-wrapper.properties are — see backend/README, "Gradle wrapper").
+# The evaluate job therefore installs the pinned Gradle 9.1.0 — the version
+# gradle-wrapper.properties names — via gradle/actions/setup-gradle, exactly
+# as backend-ci.yml does.
 
 on:
   workflow_dispatch:
@@ -105,6 +112,14 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      # The gradlew scripts are not committed yet (see backend/README,
+      # "Gradle wrapper"), so — exactly as backend-ci.yml does — install the
+      # pinned Gradle directly and invoke it as `gradle` below.
+      - name: Set up Gradle 9.1.0
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.1.0"
+
       - name: Run the live evaluation
         working-directory: backend
         env:
@@ -114,7 +129,7 @@ jobs:
           VALIDEXIA_LIVE_EVAL_PROVIDER: ${{ inputs.provider }}
           VALIDEXIA_AI_BASE_URL: ${{ inputs.provider == 'groq' && 'https://api.groq.com/openai/v1' || 'https://api.anthropic.com' }}
           VALIDEXIA_LIVE_EVAL_REPORT_DIR: ${{ github.workspace }}/live-eval-report
-        run: ./gradlew --no-daemon liveEval
+        run: gradle --no-daemon liveEval
 
       - name: Upload the evaluation report
         if: always()
