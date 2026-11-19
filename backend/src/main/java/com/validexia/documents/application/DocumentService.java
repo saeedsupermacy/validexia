@@ -126,6 +126,15 @@ public class DocumentService {
         .orElseThrow(() -> notFound(documentId));
   }
 
+  /**
+   * Records one evidence citation against a document the platform successfully read.
+   *
+   * <p>The document must already belong to the caller's tenant (enforced by {@link
+   * #requireDocument}, which also supplies the 404 for a missing or foreign document) and must be
+   * {@code Ready}. A document that failed extraction has no pages and no verified text, so a
+   * citation against it would be an unverifiable claim stored indistinguishably from a real one.
+   * Page anchors are then validated by {@link #validatePageReference}.
+   */
   public Evidence createEvidence(
       UUID tenantId,
       UUID userId,
@@ -133,7 +142,11 @@ public class DocumentService {
       @Nullable UUID pageId,
       @Nullable Integer pageNumber,
       String quoteText) {
-    requireDocument(tenantId, userId, documentId);
+    DocumentData document = requireDocument(tenantId, userId, documentId);
+    if (!"Ready".equals(document.processingStatus())) {
+      throw ApiException.validation(
+          "evidence can only be recorded against a document that is Ready");
+    }
     if (quoteText == null || quoteText.isBlank()) {
       throw ApiException.validation("quoteText is required");
     }

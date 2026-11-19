@@ -354,4 +354,124 @@ class DocumentsFlowTest {
     org.junit.jupiter.api.Assertions.assertEquals(
         404, evidenceStatus(tokenB, tenantB, documentId, "{\"quoteText\":\"x\"}"));
   }
+
+  // ---- Finding 1: evidence requires a Ready document ----------------------------------
+
+  /**
+   * Uploads bytes that pass storage validation (a {@code .pdf} name and the {@code %PDF-} magic
+   * header) but cannot be parsed, so the service persists the document as {@code Failed} and
+   * returns 422. Returns the failed document's id, read back from the tenant's document list.
+   */
+  private String failedDocumentId(String token, UUID tenantId, byte[] pdf, String fileName)
+      throws Exception {
+    mvc.perform(
+            multipart("/api/v1/documents")
+                .file(new MockMultipartFile("file", fileName, "application/pdf", pdf))
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isUnprocessableEntity())
+        .andExpect(jsonPath("$.code").value("DOCUMENT_EXTRACTION_FAILED"));
+    String list =
+        mvc.perform(
+                get("/api/v1/documents")
+                    .header("Authorization", "Bearer " + token)
+                    .header("X-Tenant-Id", tenantId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    return json.readTree(list).get(0).get("id").asText();
+  }
+
+  /** A payload that passes storage validation but is not a parseable PDF. */
+  private static byte[] unparseablePdf() {
+    return "%PDF-1.7".getBytes();
+  }
+
+  @Test
+  void aFailedPdfIsPersistedAndRejectedByTheApi() throws Exception {
+    String subject = "doc-failed-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+
+    String documentId = failedDocumentId(token, tenantId, unparseablePdf(), "broken.pdf");
+
+    // The failure is retained as an audit artifact: the row exists, is Failed, and has no pages.
+    mvc.perform(
+            get("/api/v1/documents/" + documentId)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.processingStatus").value("Failed"))
+        .andExpect(jsonPath("$.pageCount").value(0));
+
+    mvc.perform(
+            get("/api/v1/documents/" + documentId + "/pages")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(0));
+  }
+
+  @Test
+  void evidenceAgainstAFailedDocumentIsRejected() throws Exception {
+    String subject = "doc-failed-ev-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String documentId = failedDocumentId(token, tenantId, unparseablePdf(), "broken.pdf");
+
+    // Unanchored evidence is the case that previously succeeded.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, evidenceStatus(token, tenantId, documentId, "{\"quoteText\":\"unanchored\"}"));
+    // Anchored evidence was already rejected because a failed document has no pages.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, evidenceStatus(token, tenantId, documentId, "{\"pageNumber\":1,\"quoteText\":\"x\"}"));
+
+    // Neither attempt stored anything.
+    mvc.perform(
+            get("/api/v1/documents/" + documentId + "/evidence")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(0));
+  }
+
+  @Test
+  void crossTenantAccessToAFailedDocumentIsStillNotFound() throws Exception {
+    String subjectA = "doc-failed-a-" + UUID.randomUUID();
+    String tokenA = token(subjectA);
+    UUID tenantA = tenantWithMember(subjectA);
+    String documentId = failedDocumentId(tokenA, tenantA, unparseablePdf(), "broken.pdf");
+
+    String subjectB = "doc-failed-b-" + UUID.randomUUID();
+    String tokenB = token(subjectB);
+    UUID tenantB = tenantWithMember(subjectB);
+
+    // The tenant check runs before the status check, so a foreign Failed document is still a 404.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        404, evidenceStatus(tokenB, tenantB, documentId, "{\"quoteText\":\"x\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        404, evidenceStatus(tokenB, tenantB, documentId, "{\"pageNumber\":1,\"quoteText\":\"x\"}"));
+    mvc.perform(
+            get("/api/v1/documents/" + documentId)
+                .header("Authorization", "Bearer " + tokenB)
+                .header("X-Tenant-Id", tenantB))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  void evidenceAgainstAReadyDocumentStillSucceeds() throws Exception {
+    String subject = "doc-ready-ev-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String documentId = documentId(token, tenantId, 1, "ready.pdf");
+
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, evidenceStatus(token, tenantId, documentId, "{\"quoteText\":\"unanchored\"}"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200,
+        evidenceStatus(
+            token, tenantId, documentId, "{\"pageNumber\":1,\"quoteText\":\"anchored\"}"));
+  }
 }
