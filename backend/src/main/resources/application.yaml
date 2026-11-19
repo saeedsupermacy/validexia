@@ -1,6 +1,13 @@
 spring:
   application:
     name: validexia-backend
+  servlet:
+    multipart:
+      # The documents slice accepts PDFs up to validexia.documents.max-file-size-bytes (20 MB by
+      # default). Spring's own 1 MB servlet ceiling would reject them before the storage service's
+      # validation ever runs, so it is raised to match.
+      max-file-size: 25MB
+      max-request-size: 25MB
   datasource:
     # The running application ALWAYS connects as the restricted role.
     url: ${DB_URL:jdbc:postgresql://localhost:5432/validexia}
@@ -48,6 +55,15 @@ validexia:
     # disabled (the local sid denylist still applies).
     secret-key: ${CLERK_SECRET_KEY:}
     api-base-url: https://api.clerk.com
+  documents:
+    # Documents/evidence slice (V13). Storage MUST be outside any web-served directory.
+    storage-base-path: ${VALIDEXIA_DOCUMENTS_STORAGE_BASE_PATH:}
+    # Upload ceiling in bytes. Spring's servlet multipart ceiling must be at least this large.
+    max-file-size-bytes: ${VALIDEXIA_DOCUMENTS_MAX_FILE_SIZE_BYTES:20971520}
+    # Extraction ceiling in pages. A small PDF can declare a very large page tree, so the byte
+    # ceiling alone does not bound the work extraction performs; this is enforced server-side in
+    # PdfPageExtractor before any per-page allocation or text extraction begins.
+    max-page-count: ${VALIDEXIA_DOCUMENTS_MAX_PAGE_COUNT:2000}
   ai:
     # Model layer (docs/ai/AI-FOUNDATION-DESIGN.md). Disabled and keyless by default: an
     # unconfigured deployment fails every model call closed with a clear error — it never
