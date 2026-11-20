@@ -38,7 +38,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_catalog.pg_constraint
         WHERE conname = 'evidence_records_tenant_id_key'
-          AND conrelid = 'public.evidence_records'::reg_catalog.regclass) THEN
+          AND conrelid = 'public.evidence_records'::regclass) THEN
         ALTER TABLE public.evidence_records
             ADD CONSTRAINT evidence_records_tenant_id_key UNIQUE (tenant_id, id);
     END IF;
