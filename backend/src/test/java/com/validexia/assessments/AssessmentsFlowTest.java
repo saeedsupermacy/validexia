@@ -312,6 +312,19 @@ class AssessmentsFlowTest {
             .content("{\"passages\":[{\"documentId\":\"" + documentId + "\",\"pageNumber\":1}]}"));
   }
 
+  private int setStatus(String token, UUID tenantId, String assessmentId, String status)
+      throws Exception {
+    return mvc.perform(
+            post("/api/v1/assessments/" + assessmentId + "/status")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"" + status + "\"}"))
+        .andReturn()
+        .getResponse()
+        .getStatus();
+  }
+
   private int findingStatus(String token, UUID tenantId, String assessmentId, String body)
       throws Exception {
     return mvc.perform(
@@ -782,5 +795,110 @@ class AssessmentsFlowTest {
       org.junit.jupiter.api.Assertions.assertEquals(
           item[1], body.get("severity").asText(), item[0] + " must map to " + item[1]);
     }
+  }
+
+  // ---- Fix A: the permitted assessment lifecycle, enforced in the database ----------------
+
+  @Test
+  void onlyThePermittedAssessmentTransitionsSucceed() throws Exception {
+    String subject = "asm-transitions-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+
+    // Draft -> In Review, and Draft -> Rejected.
+    String draftToReview = assessment(token, tenantId, vendor(token, tenantId, "VND-T1"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, draftToReview, "In Review"));
+    String draftToRejected = assessment(token, tenantId, vendor(token, tenantId, "VND-T2"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, draftToRejected, "Rejected"));
+
+    // In Review -> Approved, and In Review -> Rejected.
+    String reviewToApproved = assessment(token, tenantId, vendor(token, tenantId, "VND-T3"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, reviewToApproved, "In Review"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, reviewToApproved, "Approved"));
+    String reviewToRejected = assessment(token, tenantId, vendor(token, tenantId, "VND-T4"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, reviewToRejected, "In Review"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, reviewToRejected, "Rejected"));
+
+    // Draft -> Approved is not permitted.
+    String draft = assessment(token, tenantId, vendor(token, tenantId, "VND-T5"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, draft, "Approved"));
+
+    // In Review -> Draft is not permitted.
+    String inReview = assessment(token, tenantId, vendor(token, tenantId, "VND-T6"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        200, setStatus(token, tenantId, inReview, "In Review"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, inReview, "Draft"));
+
+    // Approved and Rejected are terminal.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, reviewToApproved, "In Review"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, reviewToApproved, "Rejected"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, draftToRejected, "In Review"));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, reviewToRejected, "Approved"));
+
+    // A no-op is not a transition.
+    org.junit.jupiter.api.Assertions.assertEquals(
+        400, setStatus(token, tenantId, reviewToApproved, "Approved"));
+  }
+
+  // ---- Fix B: a citation-less verdict must keep its real meaning -------------------------
+
+  @Test
+  void aCitationLessMissingVerdictStaysMissing() throws Exception {
+    String subject = "asm-missing-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String vendorId = vendor(token, tenantId, "VND-U1");
+    String documentId = document(token, tenantId, vendorId, 1, "policy.pdf");
+    String assessmentId = assessment(token, tenantId, vendorId);
+    claims(token, tenantId, assessmentId);
+
+    compareAnswerWithoutCitation("Missing");
+    compare(token, tenantId, assessmentId, documentId).andExpect(status().isOk());
+
+    JsonNode found = findings(token, tenantId, assessmentId);
+    org.junit.jupiter.api.Assertions.assertEquals(1, found.size());
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "Missing",
+        found.get(0).get("findingType").asText(),
+        "no evidence is exactly what Missing means");
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "Medium", found.get(0).get("severity").asText(), "Missing maps to Medium");
+    org.junit.jupiter.api.Assertions.assertTrue(found.get(0).get("evidenceRecordId").isNull());
+  }
+
+  @Test
+  void supportedWithNoCitationsBecomesUnsupported() throws Exception {
+    String subject = "asm-supported-none-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject);
+    String vendorId = vendor(token, tenantId, "VND-U2");
+    String documentId = document(token, tenantId, vendorId, 1, "policy.pdf");
+    String assessmentId = assessment(token, tenantId, vendorId);
+    claims(token, tenantId, assessmentId);
+
+    compareAnswerWithoutCitation("Supported");
+    compare(token, tenantId, assessmentId, documentId).andExpect(status().isOk());
+
+    JsonNode found = findings(token, tenantId, assessmentId);
+    org.junit.jupiter.api.Assertions.assertEquals(1, found.size());
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "Unsupported",
+        found.get(0).get("findingType").asText(),
+        "a positive verdict cannot stand without a verified citation");
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "High", found.get(0).get("severity").asText(), "Unsupported maps to High");
+    org.junit.jupiter.api.Assertions.assertTrue(found.get(0).get("evidenceRecordId").isNull());
   }
 }

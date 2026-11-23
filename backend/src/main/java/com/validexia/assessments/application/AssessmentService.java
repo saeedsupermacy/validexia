@@ -495,9 +495,19 @@ public class AssessmentService {
 
   /**
    * Turns one model verdict into a verified citation. The severity is never read from the response.
-   * Every citation must name a page the caller supplied; the quotation must appear in the stored
-   * text. If any check fails, the verdict is downgraded to {@code Unsupported} and the citation is
-   * dropped — never stored unverified.
+   *
+   * <p>Three cases:
+   *
+   * <ul>
+   *   <li><b>No citations supplied.</b> {@code Missing} is the honest verdict for an absence of
+   *       evidence and {@code Unsupported} is already the fallback, so both stand unchanged. A
+   *       verdict that asserts something about the evidence — {@code Supported} or {@code
+   *       Contradictory} — cannot stand without a verified citation, so it is downgraded.
+   *   <li><b>Every citation verified.</b> The model's verdict stands and the first citation is
+   *       attached.
+   *   <li><b>Any citation failed.</b> The verdict is downgraded to {@code Unsupported} and the
+   *       citation is dropped — never stored unverified.
+   * </ul>
    */
   private VerifiedCitation toCitation(
       Claim claim, ModelResponse response, List<ResolvedPage> pages) {
@@ -519,8 +529,6 @@ public class AssessmentService {
           "comparison verdict citation arrays are not index-aligned");
     }
 
-    List<CitationVerifier.StoredPage> stored =
-        pages.stream().map(ResolvedPage::storedPage).toList();
     List<CitationVerifier.Result> results = new ArrayList<>(documentIds.size());
     List<ResolvedPage> cited = new ArrayList<>(documentIds.size());
     for (int i = 0; i < documentIds.size(); i++) {
@@ -538,22 +546,33 @@ public class AssessmentService {
       cited.add(page);
     }
 
-    boolean allVerified = !results.isEmpty() && results.stream().allMatch(r -> r.verified());
-    if (allVerified) {
+    if (results.isEmpty()) {
+      if (type == FindingType.MISSING || type == FindingType.UNSUPPORTED) {
+        return new VerifiedCitation(type, title, explanation, null, null, null);
+      }
+      String failure = "the verdict was " + type.text() + " but cited no evidence";
+      LOG.info("citation verification failed for claim {}: {}", claim.id(), failure);
+      return downgraded(title, explanation, failure);
+    }
+
+    if (results.stream().allMatch(r -> r.verified())) {
       ResolvedPage page = cited.get(0);
       return new VerifiedCitation(
           type, title, explanation, page, quotes.get(0), results.get(0).computedQuoteSha256());
     }
+
     String failure =
         results.stream()
             .filter(r -> !r.verified())
             .map(CitationVerifier.Result::failure)
             .findFirst()
-            .orElse("the verdict cited no evidence");
-    if (results.isEmpty() && type == FindingType.SUPPORTED) {
-      failure = "the verdict was Supported but cited no evidence";
-    }
+            .orElse("the cited evidence could not be verified");
     LOG.info("citation verification failed for claim {}: {}", claim.id(), failure);
+    return downgraded(title, explanation, failure);
+  }
+
+  /** An {@code Unsupported} finding carrying the reason its citation failed. */
+  private VerifiedCitation downgraded(String title, String explanation, String failure) {
     return new VerifiedCitation(
         FindingType.UNSUPPORTED,
         title,

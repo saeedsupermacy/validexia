@@ -226,9 +226,11 @@ REVOKE ALL ON FUNCTION public.list_assessments(uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.list_assessments(uuid, uuid) TO validexia_app;
 ALTER FUNCTION public.list_assessments(uuid, uuid) OWNER TO validexia_assessments_owner;
 
--- Status transitions are deterministic and enforced here, not by the caller:
--- Draft -> In Review, In Review -> Approved/Rejected, Draft -> Rejected.
--- Approved and Rejected are terminal. Returns false when nothing matched.
+-- Status transitions are deterministic and enforced here, so no application caller can
+-- bypass them. The permitted lifecycle is exactly:
+--   Draft -> In Review, Draft -> Rejected, In Review -> Approved, In Review -> Rejected.
+-- Approved and Rejected are terminal, and a no-op is not a transition. Any other
+-- transition matches no row, so the function returns false and the service reports a 400.
 CREATE FUNCTION public.set_assessment_status(
     p_tenant_id uuid, p_assessment_id uuid, p_status text)
 RETURNS boolean
@@ -244,8 +246,10 @@ BEGIN
     UPDATE public.assessments
     SET status = p_status, updated_at = pg_catalog.now()
     WHERE id = p_assessment_id AND tenant_id = p_tenant_id
-      AND status <> p_status
-      AND status NOT IN ('Approved', 'Rejected');
+      AND (
+            (status = 'Draft' AND p_status IN ('In Review', 'Rejected'))
+         OR (status = 'In Review' AND p_status IN ('Approved', 'Rejected'))
+      );
     RETURN FOUND;
 END $$;
 REVOKE ALL ON FUNCTION public.set_assessment_status(uuid, uuid, text) FROM PUBLIC;
