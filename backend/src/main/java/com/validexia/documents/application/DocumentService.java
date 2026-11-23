@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -75,6 +76,12 @@ public class DocumentService {
               "Processing",
               0,
               userId);
+    } catch (DataIntegrityViolationException e) {
+      // V14 makes documents.vendor_id a composite foreign key to vendors (tenant_id, id). A vendor
+      // that does not exist in this tenant is therefore rejected here instead of being stored as a
+      // dangling reference; report it as the client error it is.
+      storage.delete(tenantId, documentId);
+      throw ApiException.validation("vendorId does not belong to this tenant");
     } catch (RuntimeException e) {
       storage.delete(tenantId, documentId);
       throw e;
