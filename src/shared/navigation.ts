@@ -6,7 +6,7 @@
  */
 
 export type ViewKey =
-  | 'command' | 'vendors' | 'assessments' | 'evidence' | 'evidence-inbox'
+  | 'command' | 'vendors' | 'internal-systems' | 'assessments' | 'evidence' | 'evidence-inbox'
   | 'extracted-facts' | 'confidence' | 'risk-events' | 'monitoring'
   | 'ai-playground' | 'remediation' | 'dependencies' | 'fourth-parties'
   | 'decisions' | 'audit-log' | 'reports' | 'integrations' | 'team' | 'settings'
@@ -52,7 +52,7 @@ export function parseHash(): { view: ViewKey; params: NavParams } | null {
     const raw = window.location.hash.replace(/^#\/?/, '');
     if (!raw) return null;
     const [view, query] = raw.split('?');
-    const validViews: ViewKey[] = ['command', 'vendors', 'assessments', 'evidence', 'evidence-inbox',
+    const validViews: ViewKey[] = ['command', 'vendors', 'internal-systems', 'assessments', 'evidence', 'evidence-inbox',
       'extracted-facts', 'confidence', 'risk-events', 'monitoring', 'ai-playground', 'remediation',
       'dependencies', 'fourth-parties', 'decisions', 'audit-log', 'reports', 'integrations', 'team',
       'settings', 'vendor-portal'];

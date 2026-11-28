@@ -3,6 +3,7 @@ import { registerNavigator, parseHash, navigateTo, stashHashParams, ViewKey as N
 import { AppShell } from "./components/layout/AppShell";
 import { Toaster } from "./shared/ui/Toaster";
 import { VendorsTable } from "./components/VendorsTable";
+import { InternalSystemsWorkspace } from "./features/internal-systems/InternalSystemsWorkspace";
 import { CommandCenter } from "./features/command-center/CommandCenter";
 import { EvidenceWorkspace } from "./features/evidence/EvidenceWorkspace";
 import { EvidenceInbox } from "./features/evidence/EvidenceInbox";
@@ -28,7 +29,7 @@ type ViewKey = NavViewKey;
 
 const HIERARCHY = {
  'Risk Operations': ['command', 'risk-events', 'monitoring', 'remediation'],
- 'Vendor Portfolio': ['vendors', 'dependencies', 'fourth-parties', 'vendor-portal'],
+ 'Vendor Portfolio': ['vendors', 'internal-systems', 'dependencies', 'fourth-parties', 'vendor-portal'],
  'Assurance & Audits': ['assessments', 'decisions', 'audit-log', 'reports'],
  'Evidence Engine': ['evidence', 'evidence-inbox', 'extracted-facts', 'confidence'],
  'System': ['integrations', 'team', 'settings', 'ai-playground']
@@ -68,6 +69,7 @@ export default function App() {
  const titles: Record<ViewKey, string> = {
  'command': "Command Center",
  'vendors': "Vendors",
+ 'internal-systems': "Internal Systems",
  'assessments': "Assessments",
  'evidence': "Evidence Repository",
  'evidence-inbox': "Intake & Processing",
@@ -159,6 +161,7 @@ export default function App() {
 
  {currentView === 'command' && <CommandCenter />}
  {currentView === 'vendors' && <VendorsTable />}
+ {currentView === 'internal-systems' && <InternalSystemsWorkspace />}
  {currentView === 'assessments' && <AssessmentsWorkspace />}
  {currentView === 'evidence' && <EvidenceWorkspace />}
  {currentView === 'evidence-inbox' && <EvidenceInbox />}
