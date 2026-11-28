@@ -1,6 +1,6 @@
 // src/features/vendors/LiveVendorDetail.tsx
 import { useState, useEffect } from 'react';
-import { Building2, Server, Lock, Sparkles, Pencil, UserX, Plus, Trash2 } from 'lucide-react';
+import { Building2, Server, Lock, Sparkles, Pencil, UserX, Plus, Trash2, KeyRound } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, Button } from '../../shared/ui/core';
 import { Dialog } from '../../shared/ui/Dialog';
 import { navigateTo } from '../../shared/navigation';
@@ -221,6 +221,10 @@ export function LiveVendorDetail({ initialVendor, onBack }: { initialVendor: Api
  <Button variant="primary" size="sm" onClick={() => navigateTo('ai-playground', { vendorId: vendor.id, vendorName: vendor.name })}>
  <Sparkles aria-hidden="true" size={14} className="mr-1.5" />
  Request Intelligence Brief
+ </Button>
+ <Button variant="secondary" size="sm" onClick={() => navigateTo('access-grants', { vendorId: vendor.id })}>
+ <KeyRound aria-hidden="true" size={14} className="mr-1.5" />
+ Access Grants
  </Button>
  <Button variant="secondary" size="sm" onClick={openEdit} disabled={isTerminated}>
  <Pencil aria-hidden="true" size={14} className="mr-1.5" />
