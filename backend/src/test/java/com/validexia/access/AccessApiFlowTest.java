@@ -573,6 +573,91 @@ class AccessApiFlowTest {
         .andExpect(jsonPath("$.message").value("Cannot unlink: evidence link is already unlinked"));
   }
 
+  /**
+   * Regression coverage for the PR #25 review correction: the confirm/reject/revoke audit events
+   * must not claim a "from" state — the Java layer cannot capture the before-state under the
+   * database function's row lock (an unlocked read can be stale by the time the function
+   * transitions the latest row), so those events record only the target state (and the reason).
+   * Guard-derived events (suspend) keep their from/to, which is exact by construction: the function
+   * only applies from that one state.
+   */
+  @Test
+  void auditDetailsForConfirmRejectRevokeCarryNoFromState() throws Exception {
+    String subject = "access-audit-details-" + UUID.randomUUID();
+    String token = token(subject);
+    UUID tenantId = tenantWithMember(subject, "admin");
+    UUID vendor = seedVendor(tenantId);
+    String systemId = createSystem(token, tenantId, "CRM").get("id").asText();
+
+    String confirmed =
+        createGrant(token, tenantId, vendor, UUID.fromString(systemId)).get("id").asText();
+    mvc.perform(
+            post("/api/v1/access-grants/" + confirmed + "/confirm")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId))
+        .andExpect(status().isOk());
+
+    String rejected =
+        createGrant(token, tenantId, vendor, UUID.fromString(systemId)).get("id").asText();
+    mvc.perform(
+            post("/api/v1/access-grants/" + rejected + "/reject")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"weak proof\"}"))
+        .andExpect(status().isOk());
+
+    String revoked =
+        createGrant(token, tenantId, vendor, UUID.fromString(systemId)).get("id").asText();
+    mvc.perform(
+            post("/api/v1/access-grants/" + revoked + "/suspend")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"hold\"}"))
+        .andExpect(status().isOk());
+    mvc.perform(
+            post("/api/v1/access-grants/" + revoked + "/revoke")
+                .header("Authorization", "Bearer " + token)
+                .header("X-Tenant-Id", tenantId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"access removed\"}"))
+        .andExpect(status().isOk());
+
+    JsonNode confirmedDetails = auditDetails(tenantId, confirmed, "ACCESS_GRANT_CONFIRMED");
+    org.junit.jupiter.api.Assertions.assertFalse(confirmedDetails.has("from"));
+    org.junit.jupiter.api.Assertions.assertEquals("Confirmed", confirmedDetails.get("to").asText());
+
+    JsonNode rejectedDetails = auditDetails(tenantId, rejected, "ACCESS_GRANT_REJECTED");
+    org.junit.jupiter.api.Assertions.assertFalse(rejectedDetails.has("from"));
+    org.junit.jupiter.api.Assertions.assertEquals("Rejected", rejectedDetails.get("to").asText());
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "weak proof", rejectedDetails.get("reason").asText());
+
+    JsonNode revokedDetails = auditDetails(tenantId, revoked, "ACCESS_GRANT_REVOKED");
+    org.junit.jupiter.api.Assertions.assertFalse(revokedDetails.has("from"));
+    org.junit.jupiter.api.Assertions.assertEquals("Revoked", revokedDetails.get("to").asText());
+    org.junit.jupiter.api.Assertions.assertEquals(
+        "access removed", revokedDetails.get("reason").asText());
+
+    // Unchanged by the correction: suspend's from/to is guard-derived and stays.
+    JsonNode suspendedDetails = auditDetails(tenantId, revoked, "ACCESS_GRANT_SUSPENDED");
+    org.junit.jupiter.api.Assertions.assertEquals("Active", suspendedDetails.get("from").asText());
+    org.junit.jupiter.api.Assertions.assertEquals("Suspended", suspendedDetails.get("to").asText());
+  }
+
+  private JsonNode auditDetails(UUID tenantId, String entityId, String action) throws Exception {
+    String details =
+        admin.queryForObject(
+            "SELECT details::text FROM public.audit_events"
+                + " WHERE tenant_key = ? AND entity_id = ? AND action = ?",
+            String.class,
+            tenantId.toString(),
+            entityId,
+            action);
+    return json.readTree(details);
+  }
+
   @Test
   void crossTenantAccessIsNotFound() throws Exception {
     String subjectA = "access-iso-a-" + UUID.randomUUID();

@@ -186,25 +186,27 @@ public class AccessTransactions {
   }
 
   public TransitionResult confirmGrant(UUID tenantId, UUID actorId, UUID grantId) {
-    Optional<GrantData> before = access.getGrant(tenantId, grantId);
     boolean applied = access.confirmGrant(tenantId, grantId, actorId);
     if (!applied) {
       String status =
           access.getGrant(tenantId, grantId).map(GrantData::verificationStatus).orElse(null);
       return TransitionResult.refused(status, Blocker.NONE);
     }
+    // No "from" is recorded for confirm/reject/revoke: the before-state cannot be
+    // captured under the function's row lock from the Java layer (an unlocked read
+    // here could be stale by the time the function transitions the latest row), so
+    // the event records only the target state the function actually reached.
     append(
         tenantId,
         actorId,
         "ACCESS_GRANT_CONFIRMED",
         "access_grant",
         grantId,
-        details("from", before.orElseThrow().verificationStatus(), "to", "Confirmed"));
+        details("to", "Confirmed"));
     return TransitionResult.appliedResult();
   }
 
   public TransitionResult rejectGrant(UUID tenantId, UUID actorId, UUID grantId, String reason) {
-    Optional<GrantData> before = access.getGrant(tenantId, grantId);
     boolean applied = access.rejectGrant(tenantId, grantId, reason, actorId);
     if (!applied) {
       String status =
@@ -217,8 +219,7 @@ public class AccessTransactions {
         "ACCESS_GRANT_REJECTED",
         "access_grant",
         grantId,
-        details(
-            "from", before.orElseThrow().verificationStatus(), "to", "Rejected", "reason", reason));
+        details("to", "Rejected", "reason", reason));
     return TransitionResult.appliedResult();
   }
 
@@ -262,7 +263,6 @@ public class AccessTransactions {
   }
 
   public TransitionResult revokeGrant(UUID tenantId, UUID actorId, UUID grantId, String reason) {
-    Optional<GrantData> before = access.getGrant(tenantId, grantId);
     boolean applied = access.revokeGrant(tenantId, grantId, reason, actorId);
     if (!applied) {
       String status =
@@ -275,7 +275,7 @@ public class AccessTransactions {
         "ACCESS_GRANT_REVOKED",
         "access_grant",
         grantId,
-        details("from", before.orElseThrow().lifecycleStatus(), "to", "Revoked", "reason", reason));
+        details("to", "Revoked", "reason", reason));
     return TransitionResult.appliedResult();
   }
 
