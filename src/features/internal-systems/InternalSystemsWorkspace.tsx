@@ -1,11 +1,12 @@
 // src/features/internal-systems/InternalSystemsWorkspace.tsx
 import { useCallback, useEffect, useState } from 'react';
-import { Archive, ArchiveRestore, Eye, Pencil, Plus, Server } from 'lucide-react';
+import { Archive, ArchiveRestore, Eye, KeyRound, Pencil, Plus, Server } from 'lucide-react';
 import { Button, Card, EmptyState, Eyebrow, StatusBadge } from '../../shared/ui/core';
 import { Input, Textarea } from '../../shared/ui/forms';
 import { Dialog } from '../../shared/ui/Dialog';
 import { TableSkeleton } from '../../shared/ui/loading';
 import { showToast } from '../../shared/ui/toast';
+import { navigateTo } from '../../shared/navigation';
 import type { TenantContext } from '../../shared/api/session';
 import type { ApiInternalSystem, InternalSystemPayload } from './api';
 import {
@@ -338,6 +339,9 @@ function SystemDetailDialog({
  </dl>
  <div className="mt-6 flex items-center justify-end gap-2">
  <Button type="button" variant="ghost" onClick={onClose}>Close</Button>
+ <Button type="button" variant="outline" onClick={() => navigateTo('access-grants', { internalSystemId: system.id })}>
+ <KeyRound aria-hidden="true" size={14} strokeWidth={1.5} className="mr-1.5" /> Access grants
+ </Button>
  {system.status === 'Active' && (
  <Button type="button" variant="outline" onClick={onEdit}>
  <Pencil aria-hidden="true" size={14} strokeWidth={1.5} className="mr-1.5" /> Edit

@@ -3,7 +3,7 @@ import React, { useState, useEffect } from "react";
 import { 
  LayoutDashboard, Building2, ClipboardCheck, FileCheck, Activity, Wrench,
  Search, Bell, HelpCircle, Menu, Network, Waypoints, AlertTriangle,
- Gavel, BarChart2, History, Blocks, Users, Settings, Sun, Moon, X, PanelRightClose, PanelRightOpen, Sparkles, DoorOpen, Server
+ Gavel, BarChart2, History, Blocks, Users, Settings, Sun, Moon, X, PanelRightClose, PanelRightOpen, Sparkles, DoorOpen, Server, KeyRound
 } from "lucide-react";
 import { WorkspaceSwitcher } from "../../shared/ui/WorkspaceSwitcher";
 import { CommandPalette } from "../../shared/ui/CommandPalette";
@@ -76,6 +76,13 @@ function SidebarContent({ isDesktopCollapsed, isMobileMenuOpen, setIsDesktopColl
  isOpen={isExpanded} 
  active={currentView === 'internal-systems'} 
  onClick={() => { onSelectView?.('internal-systems'); setIsMobileMenuOpen(false); }}
+ />
+ <NavItem 
+ icon={<KeyRound size={18} strokeWidth={1.5} />} 
+ label="Access Grants" 
+ isOpen={isExpanded} 
+ active={currentView === 'access-grants'} 
+ onClick={() => { onSelectView?.('access-grants'); setIsMobileMenuOpen(false); }}
  />
  <NavItem 
  icon={<ClipboardCheck size={18} strokeWidth={1.5} />} 

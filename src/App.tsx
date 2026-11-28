@@ -4,6 +4,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { Toaster } from "./shared/ui/Toaster";
 import { VendorsTable } from "./components/VendorsTable";
 import { InternalSystemsWorkspace } from "./features/internal-systems/InternalSystemsWorkspace";
+import { AccessGrantsWorkspace } from "./features/access-grants/AccessGrantsWorkspace";
 import { CommandCenter } from "./features/command-center/CommandCenter";
 import { EvidenceWorkspace } from "./features/evidence/EvidenceWorkspace";
 import { EvidenceInbox } from "./features/evidence/EvidenceInbox";
@@ -29,7 +30,7 @@ type ViewKey = NavViewKey;
 
 const HIERARCHY = {
  'Risk Operations': ['command', 'risk-events', 'monitoring', 'remediation'],
- 'Vendor Portfolio': ['vendors', 'internal-systems', 'dependencies', 'fourth-parties', 'vendor-portal'],
+ 'Vendor Portfolio': ['vendors', 'internal-systems', 'access-grants', 'dependencies', 'fourth-parties', 'vendor-portal'],
  'Assurance & Audits': ['assessments', 'decisions', 'audit-log', 'reports'],
  'Evidence Engine': ['evidence', 'evidence-inbox', 'extracted-facts', 'confidence'],
  'System': ['integrations', 'team', 'settings', 'ai-playground']
@@ -70,6 +71,7 @@ export default function App() {
  'command': "Command Center",
  'vendors': "Vendors",
  'internal-systems': "Internal Systems",
+ 'access-grants': "Access Grants",
  'assessments': "Assessments",
  'evidence': "Evidence Repository",
  'evidence-inbox': "Intake & Processing",
@@ -162,6 +164,7 @@ export default function App() {
  {currentView === 'command' && <CommandCenter />}
  {currentView === 'vendors' && <VendorsTable />}
  {currentView === 'internal-systems' && <InternalSystemsWorkspace />}
+ {currentView === 'access-grants' && <AccessGrantsWorkspace />}
  {currentView === 'assessments' && <AssessmentsWorkspace />}
  {currentView === 'evidence' && <EvidenceWorkspace />}
  {currentView === 'evidence-inbox' && <EvidenceInbox />}
