@@ -9,10 +9,13 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Audit append path (M02-1 v2.6 §6). Each append runs in its own transaction opened through the
- * tenant-aware transaction manager, with the tenant context set BEFORE the transaction begins, so
- * {@code set_config} is the transaction's first statement. Ordering and hashing are enforced by the
- * database trigger; this service only supplies the event fields.
+ * Audit append path (M02-1 v2.6 §6). Appends run through a {@link TransactionTemplate} with
+ * REQUIRED propagation over the tenant-aware transaction manager: when the caller already runs
+ * inside a transaction, the append JOINS it, so the event and the caller's mutation commit or roll
+ * back together (the M1 access pattern, U1 freeze v1.4.1 §9); with no surrounding transaction, the
+ * append opens its own. The tenant context is set BEFORE the template runs, so when a transaction
+ * does begin here, {@code set_config} is its first statement. Ordering and hashing are enforced by
+ * the database trigger; this service only supplies the event fields.
  */
 @Service
 public class AuditService {
